@@ -85,39 +85,7 @@ log_info "Downloading artifacts for version ${VERSION_TAG}..."
 download_file() {
     local url="$1"
     local output="$2"
-    local filename=$(basename "$url")
-
-    # If GITHUB_TOKEN is present, use the API to download from private repo
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        log_info "Using GitHub API for authenticated download of $filename..."
-        
-        # 1. Get Release ID/Assets JSON
-        local release_json=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}/releases/tags/${VERSION_TAG}")
-        
-        # 2. Find Asset ID for the filename
-        local asset_id=$(echo "$release_json" | python3 -c "import sys, json; assets = json.load(sys.stdin)['assets']; print([a['id'] for a in assets if a['name'] == '$filename'][0])" 2>/dev/null || echo "")
-        
-        if [[ -z "$asset_id" ]]; then
-            # Try to download directly if asset_id search failed (might be a report, not an asset)
-            log_warn "Asset ID not found for $filename, trying direct download..."
-        else
-            if curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/octet-stream" \
-                -o "$output" \
-                -L "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}/releases/assets/${asset_id}"; then
-                log_info "Downloaded via API: $output"
-                return 0
-            fi
-        fi
-    fi
-
-    # Fallback to direct download (public or if API fails)
-    local curl_opts=(-fsSL)
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        curl_opts+=(-H "Authorization: token $GITHUB_TOKEN")
-    fi
-    if ! curl "${curl_opts[@]}" -o "$output" "$url"; then
+    if ! curl -fsSL -o "$output" "$url"; then
         log_error "Failed to download: $url"
         return 1
     fi
