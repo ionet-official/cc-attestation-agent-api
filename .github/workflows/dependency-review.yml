@@ -15,6 +15,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Dependency Review
+        # Works automatically on public repos; private repos require GitHub Advanced Security
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: critical
