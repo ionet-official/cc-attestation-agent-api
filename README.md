@@ -57,11 +57,78 @@ Response:
 }
 ```
 
-## Installation & Usage
+## Local Development
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+## Production Deployment
+
+This project uses a secure deployment pipeline with SBOM generation, artifact signing, and provenance attestation.
+
+### Build Pipeline
+
+The GitHub Actions workflow (`.github/workflows/build-and-attest.yml`) automatically:
+
+1. **Generates locked requirements** with hashes using pip-tools
+2. **Creates SBOM** in CycloneDX format
+3. **Audits dependencies** for known vulnerabilities
+4. **Signs artifacts** using Sigstore/cosign
+5. **Creates SBOM attestation** linking the SBOM to the artifact
+6. **Generates SLSA provenance** (Level 3)
+7. **Publishes a GitHub Release** with all artifacts and verification instructions
+
+### Deploying to a VM
+
+```bash
+# Set your GitHub org/repo
+export GITHUB_ORG="ionet-official"
+export GITHUB_REPO="cc-attestation-agent-api"
+
+# Deploy a specific version
+./deploy/deploy.sh v1.0.0
+```
+
+The deployment script:
+- Downloads the artifact and all attestations
+- Verifies the Sigstore signature
+- Verifies the SBOM attestation
+- Verifies SLSA provenance
+- Scans the SBOM for vulnerabilities
+- Installs the application with a systemd service
+
+### Manual Verification
+
+You can verify artifacts without deploying:
+
+```bash
+# Verify signature
+cosign verify-blob attestation-api-1.0.0.tar.gz \
+  --bundle attestation-api-1.0.0.bundle \
+  --certificate-identity-regexp ".*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+# Verify SBOM attestation
+cosign verify-blob-attestation attestation-api-1.0.0.tar.gz \
+  --bundle attestation-api-1.0.0.sbom-attestation.bundle \
+  --type cyclonedx \
+  --certificate-identity-regexp ".*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+# Verify SLSA provenance
+slsa-verifier verify-artifact attestation-api-1.0.0.tar.gz \
+  --provenance-path multiple.intoto.jsonl \
+  --source-uri github.com/ionet-official/cc-attestation-agent-api
+```
+
+Or use the verification script:
+
+```bash
+./deploy/verify.sh attestation-api-1.0.0.tar.gz \
+  --sbom sbom.cdx.json \
+  --provenance multiple.intoto.jsonl
 ```
 
 ## Dependencies
@@ -73,3 +140,14 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ## Use Case
 
 External clients send a nonce to prove freshness. Service returns cryptographically signed quotes that clients verify against Intel/NVIDIA roots of trust. This proves the workload runs on genuine confidential hardware before sending sensitive data.
+
+## Security
+
+This deployment process provides:
+
+| Verification | What It Proves |
+|--------------|----------------|
+| **Sigstore signature** | Artifact hasn't been tampered with since build |
+| **SBOM attestation** | Exact dependencies at build time, linked to artifact |
+| **SLSA provenance** | Built from specific commit, by specific workflow |
+| **Vulnerability scan** | No known CVEs in dependencies at deploy time |

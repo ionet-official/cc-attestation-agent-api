@@ -1,0 +1,15 @@
+# Development and build dependencies
+-r requirements.txt
+
+# Dependency locking
+pip-tools
+
+# SBOM generation
+cyclonedx-bom
+
+# Security auditing
+pip-audit
+
+# Testing (optional)
+pytest
+httpx

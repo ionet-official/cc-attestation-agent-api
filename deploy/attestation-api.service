@@ -1,0 +1,40 @@
+[Unit]
+Description=Attestation Agent API
+Documentation=https://github.com/ionet-official/cc-attestation-agent-api
+After=network.target
+
+[Service]
+Type=simple
+User=attestation
+Group=attestation
+WorkingDirectory=/opt/attestation-api
+ExecStart=/opt/attestation-api/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=attestation-api
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+
+# Required access for TDX attestation
+ReadWritePaths=/sys/kernel/config/tsm
+
+# Limit resources (adjust as needed)
+MemoryMax=512M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target
