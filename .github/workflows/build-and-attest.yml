@@ -57,9 +57,14 @@ jobs:
 
       - name: Audit dependencies for vulnerabilities
         run: |
+          # Generate JSON report for artifacts
           pip-audit -r requirements.lock.txt \
             --format json \
-            --output audit-report.json || true
+            --output audit-report.json
+
+          # Display human-readable output and fail if vulnerabilities found
+          echo "=== Vulnerability Audit Results ==="
+          pip-audit -r requirements.lock.txt --strict
 
       - name: Create deployment package
         id: package
