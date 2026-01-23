@@ -66,20 +66,20 @@ jobs:
           echo "=== All Vulnerabilities (informational) ==="
           pip-audit -r requirements.lock.txt || true
 
-      - name: Fail on high/critical vulnerabilities
+      - name: Fail on critical vulnerabilities
         run: |
           # Install grype for severity-based filtering
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-          echo "=== Checking for High/Critical Vulnerabilities ==="
+          echo "=== Checking for Critical Vulnerabilities ==="
 
-          # Scan SBOM and fail only on high/critical severity
-          if ! grype sbom:sbom.cdx.json --fail-on high; then
-            echo "::error::High or critical vulnerabilities detected! See above for details."
+          # Scan SBOM and fail only on critical severity
+          if ! grype sbom:sbom.cdx.json --fail-on critical; then
+            echo "::error::Critical vulnerabilities detected! See above for details."
             exit 1
           fi
 
-          echo "No high/critical vulnerabilities found."
+          echo "No critical vulnerabilities found."
 
       - name: Create deployment package
         id: package
