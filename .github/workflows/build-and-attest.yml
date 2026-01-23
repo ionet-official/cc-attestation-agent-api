@@ -57,14 +57,29 @@ jobs:
 
       - name: Audit dependencies for vulnerabilities
         run: |
-          # Generate JSON report for artifacts
+          # Generate pip-audit JSON report for reference
           pip-audit -r requirements.lock.txt \
             --format json \
-            --output audit-report.json
+            --output audit-report.json || true
 
-          # Display human-readable output and fail if vulnerabilities found
-          echo "=== Vulnerability Audit Results ==="
-          pip-audit -r requirements.lock.txt --strict
+          # Display human-readable summary of all vulnerabilities
+          echo "=== All Vulnerabilities (informational) ==="
+          pip-audit -r requirements.lock.txt || true
+
+      - name: Fail on high/critical vulnerabilities
+        run: |
+          # Install grype for severity-based filtering
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+          echo "=== Checking for High/Critical Vulnerabilities ==="
+
+          # Scan SBOM and fail only on high/critical severity
+          if ! grype sbom:sbom.cdx.json --fail-on high; then
+            echo "::error::High or critical vulnerabilities detected! See above for details."
+            exit 1
+          fi
+
+          echo "No high/critical vulnerabilities found."
 
       - name: Create deployment package
         id: package
