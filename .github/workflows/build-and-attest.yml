@@ -105,6 +105,7 @@ jobs:
     with:
       base64-subjects: ${{ needs.build.outputs.artifact-hash }}
       upload-assets: true
+      private-repository: true
 
   sign:
     needs: build
