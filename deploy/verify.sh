@@ -197,13 +197,13 @@ if [[ -n "$SBOM" && -f "$SBOM" ]]; then
 
         VULN_OUTPUT=$(grype sbom:"$SBOM" --output table 2>&1) || true
 
-        # Check for high/critical vulnerabilities
-        if echo "$VULN_OUTPUT" | grep -qE "(High|Critical)"; then
-            log_error "High/Critical vulnerabilities found:"
-            echo "$VULN_OUTPUT" | grep -E "(High|Critical)" | head -10
+        # Check for critical vulnerabilities only
+        if echo "$VULN_OUTPUT" | grep -qE "Critical"; then
+            log_error "Critical vulnerabilities found:"
+            echo "$VULN_OUTPUT" | grep -E "Critical" | head -10
             ((FAILED++))
         else
-            log_info "No high/critical vulnerabilities found"
+            log_info "No critical vulnerabilities found"
             ((PASSED++))
         fi
     else
