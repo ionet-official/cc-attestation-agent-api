@@ -51,10 +51,9 @@ jobs:
 
       - name: Generate SBOM (CycloneDX)
         run: |
-          cyclonedx-py requirements \
-            -i requirements.lock.txt \
-            -o sbom.cdx.json \
-            --format json
+          cyclonedx-py environment \
+            --of json \
+            -o sbom.cdx.json
 
       - name: Audit dependencies for vulnerabilities
         run: |
