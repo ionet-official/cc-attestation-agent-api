@@ -1,0 +1,214 @@
+name: Build and Attest
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  actions: read
+
+env:
+  VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-hash: ${{ steps.hash.outputs.hash }}
+      artifact-name: ${{ steps.package.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pip-tools cyclonedx-bom pip-audit
+
+      - name: Generate locked requirements with hashes
+        run: |
+          pip-compile requirements.txt \
+            --generate-hashes \
+            --output-file requirements.lock.txt
+
+      - name: Install application dependencies
+        run: pip install -r requirements.lock.txt
+
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          cyclonedx-py requirements \
+            -i requirements.lock.txt \
+            -o sbom.cdx.json \
+            --format json
+
+      - name: Audit dependencies for vulnerabilities
+        run: |
+          pip-audit -r requirements.lock.txt \
+            --format json \
+            --output audit-report.json || true
+
+      - name: Create deployment package
+        id: package
+        run: |
+          VERSION="${{ env.VERSION }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          ARTIFACT_NAME="attestation-api-${VERSION}"
+
+          mkdir -p dist
+          tar -czvf "dist/${ARTIFACT_NAME}.tar.gz" \
+            main.py \
+            requirements.txt \
+            requirements.lock.txt \
+            sbom.cdx.json
+
+          echo "name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Calculate artifact hash
+        id: hash
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.sha256
+          echo "hash=$(sha256sum *.tar.gz | base64 -w0)" >> $GITHUB_OUTPUT
+          cat checksums.sha256
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package
+          path: |
+            dist/
+            sbom.cdx.json
+            audit-report.json
+          retention-days: 90
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.artifact-hash }}
+      upload-assets: true
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifact with Sigstore
+        run: |
+          ARTIFACT=$(ls dist/*.tar.gz)
+          ARTIFACT_NAME=$(basename "$ARTIFACT" .tar.gz)
+
+          # Sign the artifact blob
+          cosign sign-blob "$ARTIFACT" \
+            --bundle "dist/${ARTIFACT_NAME}.bundle" \
+            --yes
+
+          echo "Signed: $ARTIFACT"
+
+      - name: Attest SBOM
+        run: |
+          ARTIFACT=$(ls dist/*.tar.gz)
+          ARTIFACT_NAME=$(basename "$ARTIFACT" .tar.gz)
+
+          # Create SBOM attestation
+          cosign attest-blob "$ARTIFACT" \
+            --predicate sbom.cdx.json \
+            --type cyclonedx \
+            --bundle "dist/${ARTIFACT_NAME}.sbom-attestation.bundle" \
+            --yes
+
+          echo "SBOM attestation created"
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-deployment-package
+          path: dist/
+          retention-days: 90
+
+  release:
+    needs: [build, sign, provenance]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-deployment-package
+          path: dist/
+
+      - name: Download SBOM and audit report
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-package
+          path: reports/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.bundle
+            dist/checksums.sha256
+            reports/sbom.cdx.json
+            reports/audit-report.json
+          generate_release_notes: true
+          body: |
+            ## Verification
+
+            ### Verify artifact signature
+            ```bash
+            cosign verify-blob attestation-api-*.tar.gz \
+              --bundle attestation-api-*.bundle \
+              --certificate-identity-regexp ".*" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+            ```
+
+            ### Verify SBOM attestation
+            ```bash
+            cosign verify-blob-attestation attestation-api-*.tar.gz \
+              --bundle attestation-api-*.sbom-attestation.bundle \
+              --type cyclonedx \
+              --certificate-identity-regexp ".*" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+            ```
+
+            ### Verify SLSA provenance
+            ```bash
+            slsa-verifier verify-artifact attestation-api-*.tar.gz \
+              --provenance-path multiple.intoto.jsonl \
+              --source-uri github.com/${{ github.repository }}
+            ```
