@@ -5,10 +5,11 @@ import hashlib
 import json
 from typing import Optional, Dict, Any
 
+from eth_account import Account
+from eth_account.messages import encode_defunct
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 import httpx
-from ecdsa import SigningKey, SECP256k1
 
 try:
     from OpenSSL import crypto
@@ -160,11 +161,12 @@ def compute_hash(data: Dict[str, Any]) -> str:
 
 
 def sign_message(message: str, private_key_hex: str) -> str:
-    """Sign a message using ECDSA with the private key."""
+    """Sign a message using ECDSA with the private key, Ethereum-compatible."""
     private_key_bytes = bytes.fromhex(private_key_hex)
-    signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
-    signature = signing_key.sign(message.encode())
-    return signature.hex()
+    account = Account.from_key(private_key_bytes)
+    message_hash = encode_defunct(text=message)
+    signed_message = account.sign_message(message_hash)
+    return signed_message.signature.hex()
 
 
 @app.get("/ping")

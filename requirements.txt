@@ -5,3 +5,5 @@ pyopenssl
 nv-attestation-sdk
 httpx
 ecdsa
+eth_account
+eth-account
