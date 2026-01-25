@@ -3,3 +3,5 @@ uvicorn
 pydantic
 pyopenssl
 nv-attestation-sdk
+httpx
+ecdsa

@@ -10,6 +10,8 @@ cyclonedx-bom
 # Security auditing
 pip-audit
 
-# Testing (optional)
+# Testing
 pytest
+pytest-asyncio
+pytest-cov
 httpx

@@ -1,10 +1,14 @@
 import os
 import uuid
 import base64
-from typing import Optional
+import hashlib
+import json
+from typing import Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
+import httpx
+from ecdsa import SigningKey, SECP256k1
 
 try:
     from OpenSSL import crypto
@@ -21,6 +25,23 @@ GPU_ARCH = "HOPPER"
 
 class AttestationRequest(BaseModel):
     nonce: Optional[str] = None
+
+
+class CompletionRequest(BaseModel):
+    messages: Optional[list] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    stream: Optional[bool] = False
+    top_p: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    stop: Optional[Any] = None
+    n: Optional[int] = None
+    logprobs: Optional[bool] = None
+
+    class Config:
+        extra = "allow"
 
 
 def format_certificate_chain_to_pem(cert_chains):
@@ -131,6 +152,21 @@ def get_gpu_evidence(nonce_hex: str):
         return {"error": str(e)}
 
 
+def compute_hash(data: Dict[str, Any]) -> str:
+    """Compute SHA-256 hash of JSON data."""
+    json_str = json.dumps(data, separators=(',', ':'))
+    hash_obj = hashlib.sha256(json_str.encode())
+    return hash_obj.hexdigest()
+
+
+def sign_message(message: str, private_key_hex: str) -> str:
+    """Sign a message using ECDSA with the private key."""
+    private_key_bytes = bytes.fromhex(private_key_hex)
+    signing_key = SigningKey.from_string(private_key_bytes, curve=SECP256k1)
+    signature = signing_key.sign(message.encode())
+    return signature.hex()
+
+
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
@@ -153,5 +189,68 @@ def create_attestation_quote(payload: AttestationRequest):
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/completion")
+async def create_completion(payload: CompletionRequest):
+    """Proxy endpoint with ECDSA signing for vLLM chat completions."""
+    try:
+        private_key = os.getenv("PRIVATE_KEY")
+        public_key = os.getenv("PUBLIC_KEY")
+        vllm_api_key = os.getenv("VLLM_API_KEY")
+
+        if not private_key or not public_key or not vllm_api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Missing required environment variables: PRIVATE_KEY, PUBLIC_KEY, or VLLM_API_KEY"
+            )
+
+        request_body = payload.model_dump(exclude_none=True)
+        request_body["stream"] = False
+        request_hash = compute_hash(request_body)
+
+        vllm_url = "http://localhost:8000/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {vllm_api_key}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            vllm_response = await client.post(
+                vllm_url,
+                json=request_body,
+                headers=headers,
+                timeout=300.0
+            )
+            vllm_response.raise_for_status()
+            response_body = vllm_response.json()
+
+        response_hash = compute_hash(response_body)
+        signing_text = f"{request_hash}:{response_hash}"
+        signature = sign_message(signing_text, private_key)
+
+        return Response(
+            content=json.dumps(response_body),
+            media_type="application/json",
+            headers={
+                "text": signing_text,
+                "signature": signature,
+                "signing_address": public_key,
+                "signing_algo": "ecdsa"
+            }
+        )
+
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"vLLM service error: {e.response.text}"
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to connect to vLLM service: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
