@@ -1,4 +1,8 @@
 #!/bin/bash
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "ERROR: This script must be run with bash. Please run as 'bash $0' or './$0'" >&2
+    exit 1
+fi
 #
 # Attestation API Deployment Script
 #
@@ -13,8 +17,11 @@
 #   - slsa-verifier (will be installed if missing)
 #   - grype (optional, for vulnerability scanning)
 #
-
-set -euo pipefail
+set -e
+set -u
+if [ -n "${BASH_VERSION:-}" ]; then
+    set -o pipefail
+fi
 
 # Configuration - UPDATE THESE FOR YOUR ENVIRONMENT
 GITHUB_ORG="${GITHUB_ORG:-ionet-official}"
@@ -308,7 +315,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/sys/kernel/config/tsm
+ReadWritePaths=/sys/kernel/config/tsm /opt/attestation-api
 
 [Install]
 WantedBy=multi-user.target
