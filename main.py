@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 
@@ -210,7 +211,6 @@ async def create_completion(payload: CompletionRequest):
             )
 
         request_body = payload.model_dump(exclude_none=True)
-        request_body["stream"] = False
         request_hash = compute_hash(request_body)
 
         vllm_url = "http://localhost:8000/v1/chat/completions"
@@ -219,30 +219,84 @@ async def create_completion(payload: CompletionRequest):
             "Content-Type": "application/json"
         }
 
-        async with httpx.AsyncClient() as client:
-            vllm_response = await client.post(
-                vllm_url,
-                json=request_body,
-                headers=headers,
-                timeout=300.0
+        # Handle streaming responses
+        if payload.stream:
+            async def stream_with_signature():
+                accumulated_chunks = []
+
+                async with httpx.AsyncClient() as client:
+                    async with client.stream(
+                        "POST",
+                        vllm_url,
+                        json=request_body,
+                        headers=headers,
+                        timeout=300.0
+                    ) as response:
+                        response.raise_for_status()
+
+                        async for chunk in response.aiter_bytes():
+                            # Forward chunk to client
+                            yield chunk
+                            # Accumulate for signature
+                            accumulated_chunks.append(chunk)
+
+                # After streaming completes, compute signature
+                full_response = b"".join(accumulated_chunks).decode("utf-8")
+
+                # Parse accumulated SSE data to reconstruct response object
+                # SSE format: "data: {json}\n\n"
+                response_lines = []
+                for line in full_response.split("\n"):
+                    if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+                        response_lines.append(line[6:])  # Remove "data: " prefix
+
+                # Combine all chunks into a single response object for hashing
+                response_hash = compute_hash({"chunks": response_lines})
+                signing_text = f"{request_hash}:{response_hash}"
+                signature = sign_message(signing_text, private_key)
+
+                # Send signature as custom SSE event
+                signature_event = {
+                    "text": signing_text,
+                    "signature": signature,
+                    "signing_address": public_key,
+                    "signing_algo": "ecdsa"
+                }
+                yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
+
+            return StreamingResponse(
+                stream_with_signature(),
+                media_type="text/event-stream"
             )
-            vllm_response.raise_for_status()
-            response_body = vllm_response.json()
 
-        response_hash = compute_hash(response_body)
-        signing_text = f"{request_hash}:{response_hash}"
-        signature = sign_message(signing_text, private_key)
+        # Handle non-streaming responses
+        else:
+            request_body["stream"] = False
 
-        return Response(
-            content=json.dumps(response_body),
-            media_type="application/json",
-            headers={
-                "text": signing_text,
-                "signature": signature,
-                "signing_address": public_key,
-                "signing_algo": "ecdsa"
-            }
-        )
+            async with httpx.AsyncClient() as client:
+                vllm_response = await client.post(
+                    vllm_url,
+                    json=request_body,
+                    headers=headers,
+                    timeout=300.0
+                )
+                vllm_response.raise_for_status()
+                response_body = vllm_response.json()
+
+            response_hash = compute_hash(response_body)
+            signing_text = f"{request_hash}:{response_hash}"
+            signature = sign_message(signing_text, private_key)
+
+            return Response(
+                content=json.dumps(response_body),
+                media_type="application/json",
+                headers={
+                    "text": signing_text,
+                    "signature": signature,
+                    "signing_address": public_key,
+                    "signing_algo": "ecdsa"
+                }
+            )
 
     except httpx.HTTPStatusError as e:
         raise HTTPException(
