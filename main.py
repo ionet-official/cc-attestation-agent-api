@@ -223,8 +223,8 @@ def create_attestation_quote(payload: AttestationRequest):
 async def create_completion(payload: CompletionRequest):
     """Proxy endpoint with ECDSA signing for vLLM chat completions."""
     try:
-        private_key = GENERATED_PRIVATE_KEY or os.getenv("PRIVATE_KEY")
-        public_key = GENERATED_PUBLIC_KEY or os.getenv("PUBLIC_KEY")
+        private_key = GENERATED_PRIVATE_KEY
+        public_key = GENERATED_PUBLIC_KEY
         vllm_api_key = os.getenv("VLLM_API_KEY")
 
         if not private_key or not public_key:
