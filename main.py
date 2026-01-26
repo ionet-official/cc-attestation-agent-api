@@ -24,6 +24,28 @@ app = FastAPI()
 TSM_REPORT_PATH = "/sys/kernel/config/tsm/report"
 GPU_ARCH = "HOPPER"
 
+GENERATED_PRIVATE_KEY: Optional[str] = None
+GENERATED_PUBLIC_KEY: Optional[str] = None
+
+
+@app.on_event("startup")
+def generate_keys_on_startup():
+    """Generate Ethereum account with ECDSA key pair on application startup."""
+    global GENERATED_PRIVATE_KEY, GENERATED_PUBLIC_KEY
+
+    try:
+        account = Account.create()
+
+        GENERATED_PRIVATE_KEY = account.key.hex()
+        GENERATED_PUBLIC_KEY = account.address
+
+        print("=" * 60)
+        print("Keys generated successfully on startup")
+        print(f"Public address: {GENERATED_PUBLIC_KEY}")
+        print("=" * 60)
+    except Exception as e:
+        print(f"ERROR: Failed to generate keys on startup: {str(e)}")
+
 
 class AttestationRequest(BaseModel):
     nonce: Optional[str] = None
@@ -187,7 +209,8 @@ def create_attestation_quote(payload: AttestationRequest):
         return {
             "nonce": nonce_hex,
             "cpu": {"quote": cpu_quote_hex},
-            "gpu": gpu_payload
+            "gpu": gpu_payload,
+            "signing_address": GENERATED_PUBLIC_KEY
         }
 
     except ValueError as e:
@@ -200,14 +223,20 @@ def create_attestation_quote(payload: AttestationRequest):
 async def create_completion(payload: CompletionRequest):
     """Proxy endpoint with ECDSA signing for vLLM chat completions."""
     try:
-        private_key = os.getenv("PRIVATE_KEY")
-        public_key = os.getenv("PUBLIC_KEY")
+        private_key = GENERATED_PRIVATE_KEY or os.getenv("PRIVATE_KEY")
+        public_key = GENERATED_PUBLIC_KEY or os.getenv("PUBLIC_KEY")
         vllm_api_key = os.getenv("VLLM_API_KEY")
 
-        if not private_key or not public_key or not vllm_api_key:
+        if not private_key or not public_key:
             raise HTTPException(
                 status_code=500,
-                detail="Missing required environment variables: PRIVATE_KEY, PUBLIC_KEY, or VLLM_API_KEY"
+                detail="Keys not available. Ensure keys are generated on startup or set via environment variables."
+            )
+
+        if not vllm_api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Missing required environment variable: VLLM_API_KEY"
             )
 
         request_body = payload.model_dump(exclude_none=True)

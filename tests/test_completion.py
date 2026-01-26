@@ -301,14 +301,28 @@ class TestCompletionEndpoint:
         assert 'data: ' in response_text
 
     def test_completion_missing_env_vars(self, client, monkeypatch):
-        """Test error when environment variables are missing."""
+        """Test error when keys are not available and environment variables are missing."""
+        import main
+
+        # Temporarily set generated keys to None to simulate key generation failure
+        original_private = main.GENERATED_PRIVATE_KEY
+        original_public = main.GENERATED_PUBLIC_KEY
+        main.GENERATED_PRIVATE_KEY = None
+        main.GENERATED_PUBLIC_KEY = None
+
         monkeypatch.delenv("PRIVATE_KEY", raising=False)
         monkeypatch.delenv("PUBLIC_KEY", raising=False)
         monkeypatch.delenv("VLLM_API_KEY", raising=False)
 
-        response = client.post("/completion", json={"messages": []})
-        assert response.status_code == 500
-        assert "Missing required environment variables" in response.json()["detail"]
+        try:
+            response = client.post("/completion", json={"messages": []})
+            assert response.status_code == 500
+            # When keys are not generated and env vars are missing, should get this error
+            assert "Keys not available" in response.json()["detail"]
+        finally:
+            # Restore the keys for other tests
+            main.GENERATED_PRIVATE_KEY = original_private
+            main.GENERATED_PUBLIC_KEY = original_public
 
     @patch("httpx.AsyncClient")
     def test_completion_vllm_error(self, mock_client_class, client, mock_env):
