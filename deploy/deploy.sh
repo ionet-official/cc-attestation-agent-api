@@ -105,8 +105,7 @@ download_file "${BASE_URL}/${ARTIFACT_NAME}.sbom-attestation.bundle" "sbom-attes
 download_file "${BASE_URL}/checksums.sha256" "checksums.sha256"
 download_file "${BASE_URL}/sbom.cdx.json" "sbom.cdx.json"
 
-# Download SLSA provenance (may have different naming)
-if ! download_file "${BASE_URL}/multiple.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
+if ! download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
     log_warn "SLSA provenance file not found, skipping provenance verification"
     SKIP_PROVENANCE=true
 else
