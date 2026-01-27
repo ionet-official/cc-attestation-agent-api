@@ -92,10 +92,10 @@ Response:
   - `signing_address`: Public key used for verification
   - `signing_algo`: `ecdsa`
 
-Environment Variables Required:
-- `PRIVATE_KEY`: Hex-encoded private key for ECDSA signing
-- `PUBLIC_KEY`: Hex-encoded public key (returned in response headers)
+Environment Variables:
 - `VLLM_API_KEY`: API key for authenticating with local vLLM service
+
+**Note:** ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
 
 ## Local Development
 
