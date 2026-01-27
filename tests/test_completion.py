@@ -11,23 +11,29 @@ from main import app, compute_hash, sign_message
 
 @pytest.fixture
 def test_keys():
-    """Generate test ECDSA key pair."""
-    from ecdsa import SigningKey, SECP256k1
+    """Generate test ECDSA key pair using eth_account (Ethereum-compatible)."""
+    from eth_account import Account
 
-    private_key_obj = SigningKey.generate(curve=SECP256k1)
-    public_key_obj = private_key_obj.get_verifying_key()
+    account = Account.create()
+    # Use removeprefix or slice to avoid lstrip removing extra chars
+    private_key_hex = account.key.hex()
+    if private_key_hex.startswith('0x'):
+        private_key_hex = private_key_hex[2:]
 
     return {
-        "private_key": private_key_obj.to_string().hex(),
-        "public_key": public_key_obj.to_string().hex()
+        "private_key": private_key_hex,
+        "public_key": account.address  # Ethereum address
     }
 
 
 @pytest.fixture
 def mock_env(test_keys, monkeypatch):
-    """Set up test environment variables."""
-    monkeypatch.setenv("PRIVATE_KEY", test_keys["private_key"])
-    monkeypatch.setenv("PUBLIC_KEY", test_keys["public_key"])
+    """Set up test environment by patching global keys and env vars."""
+    import main
+
+    # Patch the global keys that are normally set on startup
+    monkeypatch.setattr(main, "GENERATED_PRIVATE_KEY", test_keys["private_key"])
+    monkeypatch.setattr(main, "GENERATED_PUBLIC_KEY", test_keys["public_key"])
     monkeypatch.setenv("VLLM_API_KEY", "test-api-key")
 
 
