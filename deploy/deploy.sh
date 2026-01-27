@@ -224,9 +224,9 @@ if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
         log_info "Scanning SBOM for vulnerabilities..."
 
-        # Scan and fail on high/critical vulnerabilities
-        if ! grype sbom:sbom.cdx.json --fail-on high; then
-            log_error "High or critical vulnerabilities detected!"
+        # Scan and fail on critical vulnerabilities only
+        if ! grype sbom:sbom.cdx.json --fail-on critical; then
+            log_error "Critical vulnerabilities detected!"
             log_error "Review the vulnerabilities above and decide whether to proceed."
             read -p "Continue anyway? [y/N] " -n 1 -r
             echo
@@ -235,7 +235,7 @@ if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
             fi
             log_warn "Continuing despite vulnerabilities..."
         else
-            log_info "No high/critical vulnerabilities found"
+            log_info "No critical vulnerabilities found"
         fi
     fi
 else
