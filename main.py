@@ -1,3 +1,9 @@
+"""
+Attestation Agent API for confidential computing environments.
+
+Provides endpoints for CPU/GPU attestation and proxied LLM completions
+with ECDSA signatures for response integrity verification.
+"""
 import os
 import uuid
 import base64
@@ -48,10 +54,14 @@ def generate_keys_on_startup():
 
 
 class AttestationRequest(BaseModel):
+    """Request model for attestation endpoint."""
+
     nonce: Optional[str] = None
 
 
 class CompletionRequest(BaseModel):
+    """Request model for OpenAI-compatible chat completions."""
+
     messages: Optional[list] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
@@ -65,6 +75,8 @@ class CompletionRequest(BaseModel):
     logprobs: Optional[bool] = None
 
     class Config:
+        """Pydantic config to allow extra fields for forward compatibility."""
+
         extra = "allow"
 
 
