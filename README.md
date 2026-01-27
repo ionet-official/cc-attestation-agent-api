@@ -10,11 +10,17 @@ FastAPI service for remote attestation of confidential VMs with Intel TDX and NV
 
 ## What It Does
 
-Provides a single API endpoint that generates attestation quotes from both CPU and GPU:
+Provides two main API endpoints:
 
-- **CPU**: Collects Intel TDX quote via TSM interface (`/sys/kernel/config/tsm/report`)
-- **GPU**: Collects H200 attestation reports using NVIDIA Attestation SDK
-- **Output**: Returns signed quotes with certificate chains for external verification
+1. **Remote Attestation** (`/attestation`): Generates attestation quotes from both CPU and GPU
+   - **CPU**: Collects Intel TDX quote via TSM interface (`/sys/kernel/config/tsm/report`)
+   - **GPU**: Collects H200 attestation reports using NVIDIA Attestation SDK
+   - **Output**: Returns signed quotes with certificate chains for external verification
+
+2. **Confidential Completion** (`/completion`): Proxies LLM inference requests with cryptographic signing
+   - **Proxy**: Forwards chat completion requests to local vLLM service
+   - **Signing**: Computes SHA-256 hashes of request/response and signs with ECDSA
+   - **Output**: Returns vLLM response with signature headers for verification
 
 ## API
 
@@ -56,6 +62,40 @@ Response:
   }
 }
 ```
+
+**POST** `/completion`
+
+Proxy endpoint for vLLM chat completions with cryptographic signing. Forwards requests to a local vLLM service and returns signed responses.
+
+Request:
+```json
+{
+  "messages": [{"role": "user", "content": "Hello"}],
+  "model": "optional-model-name",
+  "temperature": 0.7,
+  "max_tokens": 100,
+  "stream": false,
+  "top_p": 1.0,
+  "frequency_penalty": 0.0,
+  "presence_penalty": 0.0,
+  "stop": null,
+  "n": 1,
+  "logprobs": false
+}
+```
+
+Response:
+- Body: Standard OpenAI-compatible chat completion response from vLLM
+- Headers:
+  - `text`: Signing text in format `{request_hash}:{response_hash}`
+  - `signature`: ECDSA signature (hex-encoded)
+  - `signing_address`: Public key used for verification
+  - `signing_algo`: `ecdsa`
+
+Environment Variables Required:
+- `PRIVATE_KEY`: Hex-encoded private key for ECDSA signing
+- `PUBLIC_KEY`: Hex-encoded public key (returned in response headers)
+- `VLLM_API_KEY`: API key for authenticating with local vLLM service
 
 ## Local Development
 
