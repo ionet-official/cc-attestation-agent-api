@@ -211,16 +211,16 @@ jobs:
 
             ### Verify artifact signature
             ```bash
-            cosign verify-blob attestation-api-*.tar.gz \
-              --bundle attestation-api-*.bundle \
+            cosign verify-blob ${{ needs.build.outputs.artifact-name }}.tar.gz \
+              --bundle ${{ needs.build.outputs.artifact-name }}.bundle \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
             ```
 
             ### Verify SBOM attestation
             ```bash
-            cosign verify-blob-attestation attestation-api-*.tar.gz \
-              --bundle attestation-api-*.sbom-attestation.bundle \
+            cosign verify-blob-attestation ${{ needs.build.outputs.artifact-name }}.tar.gz \
+              --bundle ${{ needs.build.outputs.artifact-name }}.sbom-attestation.bundle \
               --type cyclonedx \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
@@ -228,7 +228,7 @@ jobs:
 
             ### Verify SLSA provenance
             ```bash
-            slsa-verifier verify-artifact attestation-api-*.tar.gz \
-              --provenance-path multiple.intoto.jsonl \
+            slsa-verifier verify-artifact ${{ needs.build.outputs.artifact-name }}.tar.gz \
+              --provenance-path ${{ needs.build.outputs.artifact-name }}.tar.gz.intoto.jsonl \
               --source-uri github.com/${{ github.repository }}
             ```

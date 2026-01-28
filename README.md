@@ -159,7 +159,7 @@ cosign verify-blob-attestation attestation-api-1.0.0.tar.gz \
 
 # Verify SLSA provenance
 slsa-verifier verify-artifact attestation-api-1.0.0.tar.gz \
-  --provenance-path multiple.intoto.jsonl \
+  --provenance-path attestation-api-1.0.0.tar.gz.intoto.jsonl \
   --source-uri github.com/ionet-official/cc-attestation-agent-api
 ```
 
@@ -168,7 +168,7 @@ Or use the verification script:
 ```bash
 ./deploy/verify.sh attestation-api-1.0.0.tar.gz \
   --sbom sbom.cdx.json \
-  --provenance multiple.intoto.jsonl
+  --provenance attestation-api-1.0.0.tar.gz.intoto.jsonl
 ```
 
 ## Dependencies
