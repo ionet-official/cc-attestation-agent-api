@@ -4,6 +4,11 @@ Attestation Agent API for confidential computing environments.
 Provides endpoints for CPU/GPU attestation and proxied LLM completions
 with ECDSA signatures for response integrity verification.
 """
+try:
+    from _version import __version__
+except ImportError:
+    __version__ = "dev"
+
 import os
 import uuid
 import base64
@@ -206,7 +211,7 @@ def sign_message(message: str, private_key_hex: str) -> str:
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
 
 
 @app.post("/attestation")

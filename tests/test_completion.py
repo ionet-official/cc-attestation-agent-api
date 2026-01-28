@@ -89,7 +89,9 @@ class TestCompletionEndpoint:
         """Test ping endpoint."""
         response = client.get("/ping")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "version" in data
 
     @patch("httpx.AsyncClient")
     def test_completion_success(

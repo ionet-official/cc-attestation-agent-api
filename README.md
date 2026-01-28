@@ -26,14 +26,17 @@ Provides two main API endpoints:
 
 **GET** `/ping`
 
-Health check endpoint.
+Health check endpoint. Returns service version.
 
 Response:
 ```json
 {
-  "status": "ok"
+  "status": "ok",
+  "version": "1.0.0"
 }
 ```
+
+Note: Version is `"dev"` when running locally without a build.
 
 **POST** `/attestation`
 
