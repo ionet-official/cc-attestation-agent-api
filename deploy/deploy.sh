@@ -140,9 +140,10 @@ install_cosign() {
     sudo mv cosign /usr/local/bin/
 }
 
+SLSA_VERSION="v2.7.1"
+
 install_slsa_verifier() {
-    log_info "Installing slsa-verifier..."
-    SLSA_VERSION="v2.5.1"
+    log_info "Installing slsa-verifier ${SLSA_VERSION}..."
     curl -fsSL -o slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERSION}/slsa-verifier-linux-amd64"
     chmod +x slsa-verifier
     sudo mv slsa-verifier /usr/local/bin/
@@ -157,7 +158,14 @@ if ! command -v cosign &> /dev/null; then
     install_cosign
 fi
 
-if ! command -v slsa-verifier &> /dev/null; then
+if command -v slsa-verifier &> /dev/null; then
+    CURRENT_SLSA_VERSION=$(slsa-verifier version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
+    REQUIRED_SLSA_VERSION="${SLSA_VERSION#v}"
+    if [[ "$(printf '%s\n' "$REQUIRED_SLSA_VERSION" "$CURRENT_SLSA_VERSION" | sort -V | head -1)" != "$REQUIRED_SLSA_VERSION" ]]; then
+        log_info "Upgrading slsa-verifier from v${CURRENT_SLSA_VERSION} to ${SLSA_VERSION}..."
+        install_slsa_verifier
+    fi
+else
     install_slsa_verifier
 fi
 
