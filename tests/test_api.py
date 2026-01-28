@@ -12,7 +12,9 @@ class TestPingEndpoint:
     def test_ping_returns_ok(self):
         response = client.get("/ping")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "version" in data
 
 
 class TestPrepareNonce:
