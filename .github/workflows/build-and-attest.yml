@@ -81,6 +81,12 @@ jobs:
 
           echo "No critical vulnerabilities found."
 
+      - name: Embed version
+        run: |
+          VERSION="${{ env.VERSION }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          echo "__version__ = \"${VERSION}\"" > _version.py
+
       - name: Create deployment package
         id: package
         run: |
@@ -91,6 +97,7 @@ jobs:
           mkdir -p dist
           tar -czvf "dist/${ARTIFACT_NAME}.tar.gz" \
             main.py \
+            _version.py \
             requirements.txt \
             requirements.lock.txt \
             sbom.cdx.json
