@@ -100,7 +100,7 @@ class TestCompletionEndpoint:
         """Test successful completion with signature verification."""
         from httpx import Request
 
-        mock_request = Request("POST", "http://localhost:8000/v1/chat/completions")
+        mock_request = Request("POST", "http://localhost:8001/v1/chat/completions")
         mock_response = HttpxResponse(
             status_code=200,
             json=sample_vllm_response,
@@ -395,7 +395,7 @@ class TestCompletionEndpoint:
         """Test that optional OpenAI fields are properly handled."""
         from httpx import Request
 
-        mock_request = Request("POST", "http://localhost:8000/v1/chat/completions")
+        mock_request = Request("POST", "http://localhost:8001/v1/chat/completions")
         mock_response = HttpxResponse(
             status_code=200,
             json=sample_vllm_response,
