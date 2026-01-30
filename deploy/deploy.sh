@@ -352,7 +352,7 @@ WorkingDirectory=${DEPLOY_DIR}
 # Verify file integrity before starting - fails if files have been tampered with
 ExecStartPre=/bin/bash -c 'cd ${DEPLOY_DIR} && sha256sum -c .integrity-checksums'
 
-ExecStart=/bin/bash -c 'export VLLM_API_KEY=\${VLLM_API_KEY:-dummy_key}; ${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem'
+ExecStart=${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
