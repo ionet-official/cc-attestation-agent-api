@@ -57,6 +57,12 @@ if [[ -z "$VERSION" ]]; then
     echo "  DEPLOY_DIR       Deployment directory (default: /opt/ionet/cc-attestation-agent-api)"
     echo "  SERVICE_USER     User to run the service (default: root)"
     echo "  SERVICE_GROUP    Group for the service (default: root)"
+    echo "  CERT_CN          Common Name for SSL certificate (default: hostname)"
+    echo ""
+    echo "SSL Certificates:"
+    echo "  If certs/key.pem and certs/cert.pem don't exist, a self-signed"
+    echo "  certificate will be generated. For production, replace with proper"
+    echo "  certificates (e.g., Cloudflare Origin Certificate)."
     exit 1
 fi
 
@@ -270,6 +276,7 @@ fi
 log_info "Deploying to ${DEPLOY_DIR}..."
 
 # Backup existing deployment if present
+BACKUP_DIR=""
 if [[ -d "$DEPLOY_DIR" ]]; then
     BACKUP_DIR="${DEPLOY_DIR}.backup.$(date +%Y%m%d%H%M%S)"
     log_info "Backing up existing deployment to ${BACKUP_DIR}"
@@ -332,6 +339,53 @@ for file in main.py _version.py; do
 done
 
 log_info "Files protected: main.py, _version.py (use 'sudo chattr -i' to modify)"
+
+# ==============================================================================
+# Restore or generate SSL certificates
+# ==============================================================================
+CERT_DIR="${DEPLOY_DIR}/certs"
+CERT_FILE="${CERT_DIR}/cert.pem"
+KEY_FILE="${CERT_DIR}/key.pem"
+
+sudo mkdir -p "$CERT_DIR"
+
+# First, try to restore certs from backup (preserves production certs across deploys)
+if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
+    if [[ -n "$BACKUP_DIR" ]] && [[ -f "${BACKUP_DIR}/certs/cert.pem" ]] && [[ -f "${BACKUP_DIR}/certs/key.pem" ]]; then
+        log_info "Restoring SSL certificates from backup..."
+        sudo cp "${BACKUP_DIR}/certs/cert.pem" "$CERT_FILE"
+        sudo cp "${BACKUP_DIR}/certs/key.pem" "$KEY_FILE"
+        sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CERT_DIR"
+        sudo chmod 600 "$KEY_FILE"
+        sudo chmod 644 "$CERT_FILE"
+        log_info "SSL certificates restored from backup"
+    fi
+fi
+
+# If still no certs, generate self-signed
+if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
+    log_info "SSL certificates not found, generating self-signed certificates..."
+    
+    # Get hostname for certificate CN
+    CERT_CN="${CERT_CN:-$(hostname -f 2>/dev/null || echo 'localhost')}"
+    
+    # Generate self-signed certificate valid for 365 days
+    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/CN=${CERT_CN}" \
+        -addext "subjectAltName=DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1" \
+        2>/dev/null
+    
+    sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CERT_DIR"
+    sudo chmod 600 "$KEY_FILE"
+    sudo chmod 644 "$CERT_FILE"
+    
+    log_info "Self-signed certificates generated for CN=${CERT_CN}"
+    log_warn "For production, replace with proper certificates (e.g., Cloudflare Origin Certificate)"
+else
+    log_info "SSL certificates already exist, skipping generation"
+fi
 
 # ==============================================================================
 # Install/update systemd service
