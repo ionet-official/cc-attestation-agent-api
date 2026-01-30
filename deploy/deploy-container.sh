@@ -62,7 +62,14 @@ if [[ -z "$VERSION" ]]; then
     echo "  GITHUB_ORG       GitHub organization (default: ionet-official)"
     echo "  GITHUB_REPO      GitHub repository (default: cc-attestation-agent-api)"
     echo "  REGISTRY         Container registry (default: ghcr.io)"
-    echo "  CONTAINER_NAME   Container name (default: attestation-api)"
+    echo "  CONTAINER_NAME   Container name (default: cc-attestation)"
+    echo "  CERTS_DIR        SSL certificates directory (default: /opt/ionet/cc-attestation-agent-api/certs)"
+    echo "  CERT_CN          Common Name for SSL certificate (default: hostname)"
+    echo ""
+    echo "SSL Certificates:"
+    echo "  If certs/key.pem and certs/cert.pem don't exist, a self-signed"
+    echo "  certificate will be generated. For production, replace with proper"
+    echo "  certificates (e.g., Cloudflare Origin Certificate)."
     exit 1
 fi
 
@@ -203,12 +210,34 @@ if $CONTAINER_RUNTIME ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$
 fi
 
 # ==============================================================================
-# Check for SSL certificates
+# Generate SSL certificates if needed
 # ==============================================================================
-if [[ ! -f "$CERTS_DIR/cert.pem" ]] || [[ ! -f "$CERTS_DIR/key.pem" ]]; then
-    log_error "SSL certificates not found in $CERTS_DIR"
-    log_error "Please ensure cert.pem and key.pem exist"
-    exit 1
+CERT_FILE="${CERTS_DIR}/cert.pem"
+KEY_FILE="${CERTS_DIR}/key.pem"
+
+sudo mkdir -p "$CERTS_DIR"
+
+if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
+    log_info "SSL certificates not found, generating self-signed certificates..."
+
+    # Get hostname for certificate CN
+    CERT_CN="${CERT_CN:-$(hostname -f 2>/dev/null || echo 'localhost')}"
+
+    # Generate self-signed certificate valid for 365 days
+    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/CN=${CERT_CN}" \
+        -addext "subjectAltName=DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1" \
+        2>/dev/null
+
+    sudo chmod 600 "$KEY_FILE"
+    sudo chmod 644 "$CERT_FILE"
+
+    log_info "Self-signed certificates generated for CN=${CERT_CN}"
+    log_warn "For production, replace with proper certificates (e.g., Cloudflare Origin Certificate)"
+else
+    log_info "SSL certificates already exist, skipping generation"
 fi
 
 # ==============================================================================
