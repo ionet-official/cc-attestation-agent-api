@@ -50,6 +50,11 @@ def compute_code_hash() -> str:
 # Compute code hash once at module load time
 CODE_HASH = compute_code_hash()
 
+# Image digest is set at container build time and passed via environment variable
+# Format: sha256:<hex> (e.g., sha256:abc123...)
+# This provides tamperproof evidence as the digest is derived from the signed container image
+IMAGE_DIGEST = os.getenv("IMAGE_DIGEST", "")
+
 try:
     from OpenSSL import crypto
     from verifier.cc_admin import collect_gpu_evidence
@@ -81,6 +86,8 @@ def generate_keys_on_startup():
         print("Keys generated successfully on startup")
         print(f"Public address: {GENERATED_PUBLIC_KEY}")
         print(f"Code hash: {CODE_HASH}")
+        if IMAGE_DIGEST:
+            print(f"Image digest: {IMAGE_DIGEST}")
         print("=" * 60)
     except Exception as e:
         print(f"ERROR: Failed to generate keys on startup: {str(e)}")
@@ -239,7 +246,10 @@ def sign_message(message: str, private_key_hex: str) -> str:
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok", "version": __version__, "code_hash": CODE_HASH}
+    response = {"status": "ok", "version": __version__, "code_hash": CODE_HASH}
+    if IMAGE_DIGEST:
+        response["image_digest"] = IMAGE_DIGEST
+    return response
 
 
 @app.post("/attestation")
@@ -251,13 +261,16 @@ def create_attestation_quote(payload: AttestationRequest):
         cpu_quote_hex = get_cpu_quote(cpu_nonce_bytes)
         gpu_payload = get_gpu_evidence(nonce_hex)
 
-        return {
+        response = {
             "nonce": nonce_hex,
             "cpu": {"quote": cpu_quote_hex},
             "gpu": gpu_payload,
             "signing_address": GENERATED_PUBLIC_KEY,
             "code_hash": CODE_HASH
         }
+        if IMAGE_DIGEST:
+            response["image_digest"] = IMAGE_DIGEST
+        return response
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -338,6 +351,8 @@ async def create_completion(payload: CompletionRequest):
                     "signing_algo": "ecdsa",
                     "code_hash": CODE_HASH
                 }
+                if IMAGE_DIGEST:
+                    signature_event["image_digest"] = IMAGE_DIGEST
                 yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
 
             return StreamingResponse(
@@ -363,16 +378,20 @@ async def create_completion(payload: CompletionRequest):
             signing_text = f"{request_hash}:{response_hash}"
             signature = sign_message(signing_text, private_key)
 
+            response_headers = {
+                "text": signing_text,
+                "signature": signature,
+                "signing_address": public_key,
+                "signing_algo": "ecdsa",
+                "code_hash": CODE_HASH
+            }
+            if IMAGE_DIGEST:
+                response_headers["image_digest"] = IMAGE_DIGEST
+
             return Response(
                 content=json.dumps(response_body),
                 media_type="application/json",
-                headers={
-                    "text": signing_text,
-                    "signature": signature,
-                    "signing_address": public_key,
-                    "signing_algo": "ecdsa",
-                    "code_hash": CODE_HASH
-                }
+                headers=response_headers
             )
 
     except httpx.HTTPStatusError as e:
