@@ -26,9 +26,9 @@ fi
 # Configuration - UPDATE THESE FOR YOUR ENVIRONMENT
 GITHUB_ORG="${GITHUB_ORG:-ionet-official}"
 GITHUB_REPO="${GITHUB_REPO:-cc-attestation-agent-api}"
-DEPLOY_DIR="${DEPLOY_DIR:-/opt/attestation-api}"
-SERVICE_USER="${SERVICE_USER:-attestation}"
-SERVICE_GROUP="${SERVICE_GROUP:-attestation}"
+DEPLOY_DIR="${DEPLOY_DIR:-/opt/ionet/cc-attestation-agent-api}"
+SERVICE_USER="${SERVICE_USER:-root}"
+SERVICE_GROUP="${SERVICE_GROUP:-root}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -52,11 +52,11 @@ if [[ -z "$VERSION" ]]; then
     echo "  --skip-vuln-scan Skip vulnerability scanning"
     echo ""
     echo "Environment variables:"
-    echo "  GITHUB_ORG       GitHub organization (default: your-org)"
+    echo "  GITHUB_ORG       GitHub organization (default: ionet-official)"
     echo "  GITHUB_REPO      GitHub repository (default: cc-attestation-agent-api)"
-    echo "  DEPLOY_DIR       Deployment directory (default: /opt/attestation-api)"
-    echo "  SERVICE_USER     User to run the service (default: attestation)"
-    echo "  SERVICE_GROUP    Group for the service (default: attestation)"
+    echo "  DEPLOY_DIR       Deployment directory (default: /opt/ionet/cc-attestation-agent-api)"
+    echo "  SERVICE_USER     User to run the service (default: root)"
+    echo "  SERVICE_GROUP    Group for the service (default: root)"
     exit 1
 fi
 
@@ -338,9 +338,9 @@ log_info "Files protected: main.py, _version.py (use 'sudo chattr -i' to modify)
 # ==============================================================================
 log_info "Installing systemd service..."
 
-sudo cp /dev/stdin /etc/systemd/system/attestation-api.service << EOF
+sudo cp /dev/stdin /etc/systemd/system/cc-attestation.service << EOF
 [Unit]
-Description=Attestation Agent API
+Description=FastAPI Confidential Computing Attestation Service
 After=network.target
 
 [Service]
@@ -352,36 +352,37 @@ WorkingDirectory=${DEPLOY_DIR}
 # Verify file integrity before starting - fails if files have been tampered with
 ExecStartPre=/bin/bash -c 'cd ${DEPLOY_DIR} && sha256sum -c .integrity-checksums'
 
-ExecStart=${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStart=${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/default/cc-attestation
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/sys/kernel/config/tsm /opt/attestation-api
+ReadWritePaths=/sys/kernel/config/tsm ${DEPLOY_DIR}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable attestation-api.service
+sudo systemctl enable cc-attestation.service
 
 # ==============================================================================
 # Start/restart service
 # ==============================================================================
-log_info "Starting attestation-api service..."
+log_info "Starting cc-attestation service..."
 
-sudo systemctl restart attestation-api.service
+sudo systemctl restart cc-attestation.service
 
 # Wait a moment and check status
 sleep 2
 
-if sudo systemctl is-active --quiet attestation-api.service; then
+if sudo systemctl is-active --quiet cc-attestation.service; then
     log_info "Service started successfully!"
     echo ""
     log_info "============================================"
@@ -389,12 +390,12 @@ if sudo systemctl is-active --quiet attestation-api.service; then
     log_info "============================================"
     echo ""
     echo "Service status:"
-    sudo systemctl status attestation-api.service --no-pager
+    sudo systemctl status cc-attestation.service --no-pager
     echo ""
-    echo "API endpoint: http://localhost:8000"
-    echo "Health check: curl http://localhost:8000/ping"
+    echo "API endpoint: https://localhost:443"
+    echo "Health check: curl -k https://localhost:443/ping"
 else
     log_error "Service failed to start!"
-    sudo systemctl status attestation-api.service --no-pager
+    sudo systemctl status cc-attestation.service --no-pager
     exit 1
 fi
