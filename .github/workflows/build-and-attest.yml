@@ -87,6 +87,20 @@ jobs:
           VERSION="${VERSION#v}"  # Remove 'v' prefix if present
           echo "__version__ = \"${VERSION}\"" > _version.py
 
+      - name: Generate code hash
+        run: |
+          # Compute code hash matching the runtime computation in main.py
+          # Format: "filename:content\n" for each file, sorted by filename
+          (
+            for file in _version.py main.py; do
+              echo -n "${file}:"
+              cat "$file"
+              echo ""
+            done
+          ) | sha256sum | awk '{print $1}' > code-hash.txt
+
+          echo "Code hash: $(cat code-hash.txt)"
+
       - name: Create deployment package
         id: package
         run: |
@@ -120,6 +134,7 @@ jobs:
             dist/
             sbom.cdx.json
             audit-report.json
+            code-hash.txt
           retention-days: 90
 
   provenance:
@@ -191,6 +206,8 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download signed artifacts
         uses: actions/download-artifact@v7
         with:
@@ -212,6 +229,9 @@ jobs:
             dist/checksums.sha256
             reports/sbom.cdx.json
             reports/audit-report.json
+            reports/code-hash.txt
+            deploy/deploy.sh
+            deploy/verify.sh
           generate_release_notes: true
           body: |
             ## Verification
@@ -238,4 +258,17 @@ jobs:
             slsa-verifier verify-artifact ${{ needs.build.outputs.artifact-name }}.tar.gz \
               --provenance-path ${{ needs.build.outputs.artifact-name }}.tar.gz.intoto.jsonl \
               --source-uri github.com/${{ github.repository }}
+            ```
+
+            ### Verify runtime code integrity
+            After deployment, compare the `code_hash` from the API with the expected value:
+            ```bash
+            # Get expected hash from release
+            EXPECTED=$(cat code-hash.txt)
+
+            # Get runtime hash from deployed API
+            ACTUAL=$(curl -s http://localhost:8000/ping | jq -r '.code_hash')
+
+            # Compare
+            [ "$EXPECTED" = "$ACTUAL" ] && echo "Code integrity verified" || echo "TAMPERING DETECTED"
             ```

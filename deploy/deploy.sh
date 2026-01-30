@@ -104,6 +104,7 @@ download_file "${BASE_URL}/${ARTIFACT_NAME}.bundle" "app.bundle"
 download_file "${BASE_URL}/${ARTIFACT_NAME}.sbom-attestation.bundle" "sbom-attestation.bundle"
 download_file "${BASE_URL}/checksums.sha256" "checksums.sha256"
 download_file "${BASE_URL}/sbom.cdx.json" "sbom.cdx.json"
+download_file "${BASE_URL}/code-hash.txt" "code-hash.txt"
 
 if ! download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
     log_warn "SLSA provenance file not found, skipping provenance verification"
@@ -272,6 +273,14 @@ log_info "Deploying to ${DEPLOY_DIR}..."
 if [[ -d "$DEPLOY_DIR" ]]; then
     BACKUP_DIR="${DEPLOY_DIR}.backup.$(date +%Y%m%d%H%M%S)"
     log_info "Backing up existing deployment to ${BACKUP_DIR}"
+
+    # Remove immutable attribute from files before backup (if set)
+    for file in main.py _version.py; do
+        if [[ -f "$DEPLOY_DIR/$file" ]]; then
+            sudo chattr -i "$DEPLOY_DIR/$file" 2>/dev/null || true
+        fi
+    done
+
     sudo mv "$DEPLOY_DIR" "$BACKUP_DIR"
 fi
 
@@ -281,11 +290,25 @@ sudo mkdir -p "$DEPLOY_DIR"
 # Extract application
 sudo tar -xzf app.tar.gz -C "$DEPLOY_DIR"
 
-# Copy SBOM for reference
+# Copy SBOM and code hash for reference
 sudo cp sbom.cdx.json "$DEPLOY_DIR/"
+sudo cp code-hash.txt "$DEPLOY_DIR/"
 
 # Set ownership
 sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$DEPLOY_DIR"
+
+# ==============================================================================
+# Create integrity checksums for runtime verification
+# ==============================================================================
+log_info "Creating integrity checksums..."
+
+# Generate checksums for critical files (used by systemd pre-start check)
+cd "$DEPLOY_DIR"
+sudo sha256sum main.py _version.py > .integrity-checksums
+sudo chown root:root .integrity-checksums
+sudo chmod 444 .integrity-checksums
+
+log_info "Integrity checksums saved to ${DEPLOY_DIR}/.integrity-checksums"
 
 # ==============================================================================
 # Set up Python virtual environment
@@ -296,6 +319,19 @@ cd "$DEPLOY_DIR"
 sudo -u "$SERVICE_USER" python3 -m venv venv
 sudo -u "$SERVICE_USER" ./venv/bin/pip install --upgrade pip
 sudo -u "$SERVICE_USER" ./venv/bin/pip install -r requirements.lock.txt
+
+# ==============================================================================
+# Set immutable attribute on critical files
+# ==============================================================================
+log_info "Setting immutable attribute on critical files..."
+
+# Make critical files immutable to prevent tampering
+# Only root can remove this attribute with chattr -i
+for file in main.py _version.py; do
+    sudo chattr +i "$DEPLOY_DIR/$file"
+done
+
+log_info "Files protected: main.py, _version.py (use 'sudo chattr -i' to modify)"
 
 # ==============================================================================
 # Install/update systemd service
@@ -312,6 +348,10 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 WorkingDirectory=${DEPLOY_DIR}
+
+# Verify file integrity before starting - fails if files have been tampered with
+ExecStartPre=/bin/bash -c 'cd ${DEPLOY_DIR} && sha256sum -c .integrity-checksums'
+
 ExecStart=${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5

@@ -14,6 +14,7 @@ import uuid
 import base64
 import hashlib
 import json
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from eth_account import Account
@@ -22,6 +23,32 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
+
+
+def compute_code_hash() -> str:
+    """
+    Compute SHA256 hash of deployed code files for integrity verification.
+
+    This hash can be compared against the expected hash from the signed release
+    to verify that the deployed code has not been tampered with.
+    """
+    code_files = ["main.py", "_version.py"]
+    hasher = hashlib.sha256()
+
+    script_dir = Path(__file__).parent
+
+    for filename in sorted(code_files):
+        filepath = script_dir / filename
+        if filepath.exists():
+            hasher.update(f"{filename}:".encode())
+            hasher.update(filepath.read_bytes())
+            hasher.update(b"\n")
+
+    return hasher.hexdigest()
+
+
+# Compute code hash once at module load time
+CODE_HASH = compute_code_hash()
 
 try:
     from OpenSSL import crypto
@@ -53,6 +80,7 @@ def generate_keys_on_startup():
         print("=" * 60)
         print("Keys generated successfully on startup")
         print(f"Public address: {GENERATED_PUBLIC_KEY}")
+        print(f"Code hash: {CODE_HASH}")
         print("=" * 60)
     except Exception as e:
         print(f"ERROR: Failed to generate keys on startup: {str(e)}")
@@ -211,7 +239,7 @@ def sign_message(message: str, private_key_hex: str) -> str:
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "code_hash": CODE_HASH}
 
 
 @app.post("/attestation")
@@ -227,7 +255,8 @@ def create_attestation_quote(payload: AttestationRequest):
             "nonce": nonce_hex,
             "cpu": {"quote": cpu_quote_hex},
             "gpu": gpu_payload,
-            "signing_address": GENERATED_PUBLIC_KEY
+            "signing_address": GENERATED_PUBLIC_KEY,
+            "code_hash": CODE_HASH
         }
 
     except ValueError as e:
@@ -306,7 +335,8 @@ async def create_completion(payload: CompletionRequest):
                     "text": signing_text,
                     "signature": signature,
                     "signing_address": public_key,
-                    "signing_algo": "ecdsa"
+                    "signing_algo": "ecdsa",
+                    "code_hash": CODE_HASH
                 }
                 yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
 
@@ -340,7 +370,8 @@ async def create_completion(payload: CompletionRequest):
                     "text": signing_text,
                     "signature": signature,
                     "signing_address": public_key,
-                    "signing_algo": "ecdsa"
+                    "signing_algo": "ecdsa",
+                    "code_hash": CODE_HASH
                 }
             )
 
