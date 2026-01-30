@@ -41,12 +41,13 @@ RUN chown -R attestation:attestation /app
 # Switch to non-root user
 USER attestation
 
-# Expose port
-EXPOSE 8000
+# Expose port (443 for HTTPS in production, 8000 for local testing)
+EXPOSE 443 8000
 
-# Health check
+# Health check (uses HTTP for internal check, SSL termination handled by runtime)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')" || exit 1
 
-# Run the application
+# Default command (override with SSL options in production)
+# Production: python -m uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -145,6 +145,10 @@ Container deployment provides stronger tamperproof guarantees through immutable 
 curl -fsSL -o deploy.sh https://github.com/ionet-official/cc-attestation-agent-api/releases/latest/download/deploy-container.sh
 chmod +x deploy.sh
 
+# Ensure SSL certificates exist
+sudo mkdir -p /opt/ionet/cc-attestation-agent-api/certs
+# Copy your cert.pem and key.pem to /opt/ionet/cc-attestation-agent-api/certs/
+
 # Get the latest version and deploy
 VERSION=$(curl -fsSL https://api.github.com/repos/ionet-official/cc-attestation-agent-api/releases/latest | grep -oP '"tag_name": "\K[^"]+')
 sudo ./deploy.sh "$VERSION"
@@ -187,8 +191,8 @@ The container runs with `IMAGE_DIGEST` environment variable set to the signed im
 # Get expected digest from release
 EXPECTED=$(curl -sL https://github.com/ionet-official/cc-attestation-agent-api/releases/download/v1.0.0/image-digest.txt)
 
-# Get runtime digest from API
-ACTUAL=$(curl -s http://localhost:8000/ping | jq -r '.image_digest')
+# Get runtime digest from API (use -k for self-signed certs)
+ACTUAL=$(curl -sk https://localhost/ping | jq -r '.image_digest')
 
 # Compare
 [ "$EXPECTED" = "$ACTUAL" ] && echo "Verified" || echo "TAMPERED"

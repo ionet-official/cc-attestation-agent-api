@@ -21,7 +21,9 @@ GITHUB_ORG="${GITHUB_ORG:-ionet-official}"
 GITHUB_REPO="${GITHUB_REPO:-cc-attestation-agent-api}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 IMAGE_NAME="${REGISTRY}/${GITHUB_ORG}/${GITHUB_REPO}"
-CONTAINER_NAME="${CONTAINER_NAME:-attestation-api}"
+CONTAINER_NAME="${CONTAINER_NAME:-cc-attestation}"
+CERTS_DIR="${CERTS_DIR:-/opt/ionet/cc-attestation-agent-api/certs}"
+ENV_FILE="${ENV_FILE:-/etc/default/cc-attestation}"
 
 # Colors
 RED='\033[0;31m'
@@ -201,18 +203,36 @@ if $CONTAINER_RUNTIME ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$
 fi
 
 # ==============================================================================
+# Check for SSL certificates
+# ==============================================================================
+if [[ ! -f "$CERTS_DIR/cert.pem" ]] || [[ ! -f "$CERTS_DIR/key.pem" ]]; then
+    log_error "SSL certificates not found in $CERTS_DIR"
+    log_error "Please ensure cert.pem and key.pem exist"
+    exit 1
+fi
+
+# ==============================================================================
 # Run container
 # ==============================================================================
 log_info "Starting container..."
 
+# Build environment file args if exists
+ENV_ARGS=""
+if [[ -f "$ENV_FILE" ]]; then
+    ENV_ARGS="--env-file $ENV_FILE"
+fi
+
 $CONTAINER_RUNTIME run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
-    -p 8000:8000 \
+    -p 443:443 \
     -e "IMAGE_DIGEST=${IMAGE_DIGEST}" \
+    $ENV_ARGS \
     --device /dev/tdx_guest:/dev/tdx_guest \
     -v /sys/kernel/config/tsm:/sys/kernel/config/tsm:rw \
-    "$FULL_IMAGE"
+    -v "$CERTS_DIR:/app/certs:ro" \
+    "$FULL_IMAGE" \
+    python -m uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem
 
 # Wait for container to start
 sleep 3
@@ -224,7 +244,7 @@ log_info "Checking container health..."
 
 if $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     # Verify the image digest is correctly set
-    RUNTIME_DIGEST=$(curl -s http://localhost:8000/ping 2>/dev/null | grep -o '"image_digest":"[^"]*"' | cut -d'"' -f4 || echo "")
+    RUNTIME_DIGEST=$(curl -sk https://localhost:443/ping 2>/dev/null | grep -o '"image_digest":"[^"]*"' | cut -d'"' -f4 || echo "")
 
     if [[ "$RUNTIME_DIGEST" == "$IMAGE_DIGEST" ]]; then
         log_info "Container started successfully!"
@@ -242,8 +262,8 @@ if $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; 
     echo ""
     echo "Container: $CONTAINER_NAME"
     echo "Image: $FULL_IMAGE"
-    echo "API endpoint: http://localhost:8000"
-    echo "Health check: curl http://localhost:8000/ping"
+    echo "API endpoint: https://localhost:443"
+    echo "Health check: curl -k https://localhost:443/ping"
     echo ""
     echo "View logs: $CONTAINER_RUNTIME logs -f $CONTAINER_NAME"
 else

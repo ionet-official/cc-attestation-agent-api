@@ -31,14 +31,14 @@ echo "Building container image..."
 $RUNTIME build -t attestation-api:test .
 
 # Stop existing container if running
-$RUNTIME rm -f attestation-api-test 2>/dev/null || true
+$RUNTIME rm -f cc-attestation-test 2>/dev/null || true
 
 # Run container
 echo "Starting container..."
 if [[ "$1" == "--with-tdx" ]]; then
     echo "Running with TDX device access..."
     $RUNTIME run -d \
-        --name attestation-api-test \
+        --name cc-attestation-test \
         -p 8000:8000 \
         -e "IMAGE_DIGEST=sha256:local-test-build" \
         --device /dev/tdx_guest:/dev/tdx_guest \
@@ -47,7 +47,7 @@ if [[ "$1" == "--with-tdx" ]]; then
 else
     echo "Running without TDX (ping only)..."
     $RUNTIME run -d \
-        --name attestation-api-test \
+        --name cc-attestation-test \
         -p 8000:8000 \
         -e "IMAGE_DIGEST=sha256:local-test-build" \
         attestation-api:test
@@ -72,7 +72,7 @@ fi
 
 echo ""
 echo "=== Container logs ==="
-$RUNTIME logs attestation-api-test
+$RUNTIME logs cc-attestation-test
 
 echo ""
-echo "Container running. To stop: $RUNTIME rm -f attestation-api-test"
+echo "Container running. To stop: $RUNTIME rm -f cc-attestation-test"
