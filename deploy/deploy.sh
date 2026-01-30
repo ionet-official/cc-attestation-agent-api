@@ -57,6 +57,12 @@ if [[ -z "$VERSION" ]]; then
     echo "  DEPLOY_DIR       Deployment directory (default: /opt/ionet/cc-attestation-agent-api)"
     echo "  SERVICE_USER     User to run the service (default: root)"
     echo "  SERVICE_GROUP    Group for the service (default: root)"
+    echo "  CERT_CN          Common Name for SSL certificate (default: hostname)"
+    echo ""
+    echo "SSL Certificates:"
+    echo "  If certs/key.pem and certs/cert.pem don't exist, a self-signed"
+    echo "  certificate will be generated. For production, replace with proper"
+    echo "  certificates (e.g., Cloudflare Origin Certificate)."
     exit 1
 fi
 
@@ -332,6 +338,39 @@ for file in main.py _version.py; do
 done
 
 log_info "Files protected: main.py, _version.py (use 'sudo chattr -i' to modify)"
+
+# ==============================================================================
+# Generate SSL certificates if not present
+# ==============================================================================
+CERT_DIR="${DEPLOY_DIR}/certs"
+CERT_FILE="${CERT_DIR}/cert.pem"
+KEY_FILE="${CERT_DIR}/key.pem"
+
+if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
+    log_info "SSL certificates not found, generating self-signed certificates..."
+    
+    sudo mkdir -p "$CERT_DIR"
+    
+    # Get hostname for certificate CN
+    CERT_CN="${CERT_CN:-$(hostname -f 2>/dev/null || echo 'localhost')}"
+    
+    # Generate self-signed certificate valid for 365 days
+    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/CN=${CERT_CN}" \
+        -addext "subjectAltName=DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1" \
+        2>/dev/null
+    
+    sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CERT_DIR"
+    sudo chmod 600 "$KEY_FILE"
+    sudo chmod 644 "$CERT_FILE"
+    
+    log_info "Self-signed certificates generated for CN=${CERT_CN}"
+    log_warn "For production, replace with proper certificates (e.g., Cloudflare Origin Certificate)"
+else
+    log_info "SSL certificates already exist, skipping generation"
+fi
 
 # ==============================================================================
 # Install/update systemd service
