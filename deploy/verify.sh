@@ -119,7 +119,7 @@ echo "Artifact: ${ARTIFACT_NAME}.tar.gz"
 echo "Expected code hash: $(cat code-hash.txt)"
 echo ""
 echo "To verify runtime integrity after deployment:"
-echo "  curl -s http://<host>:8000/ping | jq -r '.code_hash'"
+echo "  curl -sk https://<host>:443/ping | jq -r '.code_hash'"
 echo ""
 
 PASSED=0
