@@ -41,8 +41,10 @@ if [[ "$1" == "--with-tdx" ]]; then
         --name cc-attestation-test \
         -p 8000:8000 \
         -e "IMAGE_DIGEST=sha256:local-test-build" \
+        -e "VLLM_CONTAINER_NAME=vllm-server" \
         --device /dev/tdx_guest:/dev/tdx_guest \
         -v /sys/kernel/config/tsm:/sys/kernel/config/tsm:rw \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
         attestation-api:test
 else
     echo "Running without TDX (ping only)..."
@@ -50,6 +52,8 @@ else
         --name cc-attestation-test \
         -p 8000:8000 \
         -e "IMAGE_DIGEST=sha256:local-test-build" \
+        -e "VLLM_CONTAINER_NAME=vllm-server" \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
         attestation-api:test
 fi
 

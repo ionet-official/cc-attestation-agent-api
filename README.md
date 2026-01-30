@@ -114,8 +114,14 @@ data: {"text": "...", "signature": "...", "signing_address": "...", "signing_alg
 
 When running in a container, `image_digest` is included in both headers and signature events.
 
+For `/completion` responses, vLLM provenance is also included:
+- `vllm.image_digest`: SHA256 digest of the vLLM container image (queried from Docker)
+- `vllm.model_id`: Model loaded in vLLM
+
 Environment Variables:
 - `VLLM_API_KEY`: API key for authenticating with local vLLM service
+- `VLLM_CONTAINER_NAME`: Name of vLLM container to query (default: `vllm-server`)
+- `SKIP_VLLM_PROVENANCE`: Set to `1` to skip vLLM provenance check (development only)
 
 **Note:** The service expects a local vLLM server running on port 8001 at `http://localhost:8001/v1/chat/completions`. ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
 
@@ -199,6 +205,23 @@ ACTUAL=$(curl -sk https://localhost/ping | jq -r '.image_digest')
 ```
 
 The `image_digest` is included in `/ping`, `/attestation`, and `/completion` responses.
+
+### vLLM Provenance
+
+The attestation API queries the Docker socket on startup to collect vLLM provenance:
+
+1. **Container image digest**: Queried directly from Docker (cannot be spoofed)
+2. **Model ID**: Queried from vLLM `/v1/models` endpoint
+
+**Startup behavior:**
+- Retries 3 times at 30-second intervals waiting for vLLM
+- Fails to start if vLLM is not available after all retries
+- Ensures every `/completion` response includes verified vLLM provenance
+
+**Requirements:**
+- vLLM container must be named `vllm-server` (or set `VLLM_CONTAINER_NAME`)
+- Docker socket must be mounted (`-v /var/run/docker.sock:/var/run/docker.sock:ro`)
+- vLLM API must be accessible at `http://localhost:8001`
 
 ### Why Container Deployment?
 

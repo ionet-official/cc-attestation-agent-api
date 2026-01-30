@@ -227,10 +227,12 @@ $CONTAINER_RUNTIME run -d \
     --restart unless-stopped \
     -p 443:443 \
     -e "IMAGE_DIGEST=${IMAGE_DIGEST}" \
+    -e "VLLM_CONTAINER_NAME=vllm-server" \
     $ENV_ARGS \
     --device /dev/tdx_guest:/dev/tdx_guest \
     -v /sys/kernel/config/tsm:/sys/kernel/config/tsm:rw \
     -v "$CERTS_DIR:/app/certs:ro" \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
     "$FULL_IMAGE" \
     python -m uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem
 

@@ -55,6 +55,167 @@ CODE_HASH = compute_code_hash()
 # This provides tamperproof evidence as the digest is derived from the signed container image
 IMAGE_DIGEST = os.getenv("IMAGE_DIGEST", "")
 
+# vLLM provenance - queried directly from container runtime on startup
+VLLM_PROVENANCE: Optional[Dict[str, Any]] = None
+
+
+def query_vllm_container_digest(container_name: str = "vllm-server") -> Optional[str]:
+    """
+    Query Docker/Podman socket directly to get the image digest of vLLM container.
+    This cannot be spoofed via environment variables.
+    """
+    import socket
+    import urllib.parse
+
+    docker_socket = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
+
+    if not os.path.exists(docker_socket):
+        print(f"WARNING: Docker socket not found at {docker_socket}")
+        return None
+
+    try:
+        # Connect to Docker socket
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(docker_socket)
+
+        # Request container info
+        request = f"GET /containers/{container_name}/json HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        sock.send(request.encode())
+
+        # Read response
+        response = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+            if b"\r\n\r\n" in response and b"}" in response:
+                break
+
+        sock.close()
+
+        # Parse response
+        response_str = response.decode()
+        if "200 OK" not in response_str:
+            print(f"WARNING: Container {container_name} not found")
+            return None
+
+        # Extract JSON body
+        json_start = response_str.find("{")
+        if json_start == -1:
+            return None
+
+        container_info = json.loads(response_str[json_start:])
+
+        # Get image digest - this is the actual digest, not spoofable
+        image = container_info.get("Image", "")  # Local image ID
+
+        # Get the repo digest from image inspection
+        image_id = container_info.get("Image", "")
+
+        # Query the image to get RepoDigests
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(docker_socket)
+        request = f"GET /images/{image_id}/json HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        sock.send(request.encode())
+
+        response = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+            if b"\r\n\r\n" in response and b"}" in response:
+                break
+        sock.close()
+
+        response_str = response.decode()
+        json_start = response_str.find("{")
+        if json_start != -1:
+            image_info = json.loads(response_str[json_start:])
+            repo_digests = image_info.get("RepoDigests", [])
+            if repo_digests:
+                # Extract sha256:... from full reference
+                for digest in repo_digests:
+                    if "@sha256:" in digest:
+                        return "sha256:" + digest.split("@sha256:")[1]
+                    elif "sha256:" in digest:
+                        return digest
+
+        # Fallback to image ID if no repo digest
+        return image_id if image_id.startswith("sha256:") else None
+
+    except Exception as e:
+        print(f"WARNING: Failed to query container runtime: {e}")
+        return None
+
+
+def query_vllm_models() -> Optional[Dict[str, Any]]:
+    """Query vLLM /v1/models endpoint to get loaded model information."""
+    import urllib.request
+    import urllib.error
+
+    vllm_url = os.getenv("VLLM_URL", "http://localhost:8001")
+
+    try:
+        req = urllib.request.Request(f"{vllm_url}/v1/models")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return data
+    except Exception as e:
+        print(f"WARNING: Failed to query vLLM models: {e}")
+        return None
+
+
+def collect_vllm_provenance(
+    max_retries: int = 3,
+    retry_interval: int = 30
+) -> Optional[Dict[str, Any]]:
+    """
+    Collect vLLM provenance information from container runtime and vLLM API.
+
+    Retries up to max_retries times with retry_interval seconds between attempts.
+    Returns None only if all retries are exhausted.
+    """
+    import time
+
+    container_name = os.getenv("VLLM_CONTAINER_NAME", "vllm-server")
+
+    for attempt in range(1, max_retries + 1):
+        print(f"Collecting vLLM provenance (attempt {attempt}/{max_retries})...")
+        provenance = {}
+
+        # Get container image digest directly from Docker
+        image_digest = query_vllm_container_digest(container_name)
+        if image_digest:
+            provenance["image_digest"] = image_digest
+
+        # Get model info from vLLM API
+        models_info = query_vllm_models()
+        if models_info and "data" in models_info:
+            models = models_info["data"]
+            if models:
+                model = models[0]  # Primary model
+                provenance["model_id"] = model.get("id", "")
+                provenance["model_owned_by"] = model.get("owned_by", "")
+
+        # Check if we got both container digest and model info
+        if provenance.get("image_digest") and provenance.get("model_id"):
+            print(f"vLLM provenance collected successfully on attempt {attempt}")
+            return provenance
+
+        # Log what's missing
+        if not provenance.get("image_digest"):
+            print(f"WARNING: Could not get vLLM container digest (container '{container_name}' not found?)")
+        if not provenance.get("model_id"):
+            print(f"WARNING: Could not get vLLM model info (vLLM API not responding?)")
+
+        if attempt < max_retries:
+            print(f"Retrying in {retry_interval} seconds...")
+            time.sleep(retry_interval)
+
+    return None
+
 try:
     from OpenSSL import crypto
     from verifier.cc_admin import collect_gpu_evidence
@@ -74,7 +235,7 @@ GENERATED_PUBLIC_KEY: Optional[str] = None
 @app.on_event("startup")
 def generate_keys_on_startup():
     """Generate Ethereum account with ECDSA key pair on application startup."""
-    global GENERATED_PRIVATE_KEY, GENERATED_PUBLIC_KEY
+    global GENERATED_PRIVATE_KEY, GENERATED_PUBLIC_KEY, VLLM_PROVENANCE
 
     try:
         account = Account.create()
@@ -88,9 +249,46 @@ def generate_keys_on_startup():
         print(f"Code hash: {CODE_HASH}")
         if IMAGE_DIGEST:
             print(f"Image digest: {IMAGE_DIGEST}")
-        print("=" * 60)
+
+        # Collect vLLM provenance directly from container runtime
+        # Retries 3 times at 30 second intervals
+        # Skip in development/testing mode
+        skip_vllm_check = os.getenv("SKIP_VLLM_PROVENANCE", "").lower() in ("1", "true", "yes")
+
+        if skip_vllm_check:
+            print("SKIP_VLLM_PROVENANCE is set - skipping vLLM provenance collection")
+            VLLM_PROVENANCE = None
+        else:
+            VLLM_PROVENANCE = collect_vllm_provenance(max_retries=3, retry_interval=30)
+
+        if skip_vllm_check:
+            print("=" * 60)
+            print("WARNING: Running without vLLM provenance (development mode)")
+            print("=" * 60)
+        elif VLLM_PROVENANCE:
+            print("=" * 60)
+            print("vLLM provenance collected successfully")
+            print(f"vLLM image digest: {VLLM_PROVENANCE.get('image_digest', 'N/A')}")
+            print(f"vLLM model: {VLLM_PROVENANCE.get('model_id', 'N/A')}")
+            print("=" * 60)
+        else:
+            print("=" * 60)
+            print("ERROR: Failed to collect vLLM provenance after 3 attempts")
+            print("")
+            print("Please ensure:")
+            print("  1. vLLM container 'vllm-server' is running")
+            print("  2. Docker socket is mounted (-v /var/run/docker.sock:/var/run/docker.sock:ro)")
+            print("  3. vLLM API is accessible at http://localhost:8001")
+            print("")
+            print("The attestation API cannot start without vLLM provenance.")
+            print("=" * 60)
+            import sys
+            sys.exit(1)
+
     except Exception as e:
-        print(f"ERROR: Failed to generate keys on startup: {str(e)}")
+        print(f"ERROR: Failed during startup: {str(e)}")
+        import sys
+        sys.exit(1)
 
 
 class AttestationRequest(BaseModel):
@@ -353,6 +551,8 @@ async def create_completion(payload: CompletionRequest):
                 }
                 if IMAGE_DIGEST:
                     signature_event["image_digest"] = IMAGE_DIGEST
+                if VLLM_PROVENANCE:
+                    signature_event["vllm"] = VLLM_PROVENANCE
                 yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
 
             return StreamingResponse(
@@ -387,6 +587,9 @@ async def create_completion(payload: CompletionRequest):
             }
             if IMAGE_DIGEST:
                 response_headers["image_digest"] = IMAGE_DIGEST
+            if VLLM_PROVENANCE:
+                response_headers["vllm_image_digest"] = VLLM_PROVENANCE.get("image_digest", "")
+                response_headers["vllm_model_id"] = VLLM_PROVENANCE.get("model_id", "")
 
             return Response(
                 content=json.dumps(response_body),
