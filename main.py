@@ -288,7 +288,7 @@ async def create_completion(payload: CompletionRequest):
         request_body = payload.model_dump(exclude_none=True)
         request_hash = compute_hash(request_body)
 
-        vllm_url = "http://localhost:8000/v1/chat/completions"
+        vllm_url = "http://localhost:8001/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {vllm_api_key}",
             "Content-Type": "application/json"
