@@ -26,17 +26,19 @@ Provides two main API endpoints:
 
 **GET** `/ping`
 
-Health check endpoint. Returns service version.
+Health check endpoint. Returns service version and code hash for integrity verification.
 
 Response:
 ```json
 {
   "status": "ok",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "code_hash": "abc123..."
 }
 ```
 
-Note: Version is `"dev"` when running locally without a build.
+- `version`: `"dev"` when running locally without a build
+- `code_hash`: SHA256 hash of deployed code files, used for runtime integrity verification
 
 **POST** `/attestation`
 
@@ -62,9 +64,13 @@ Response:
         "certificate": "base64-certificate-chain"
       }
     ]
-  }
+  },
+  "signing_address": "0x...",
+  "code_hash": "abc123..."
 }
 ```
+
+- `code_hash`: SHA256 hash of deployed code, compare against `code-hash.txt` from release to verify integrity
 
 **POST** `/completion`
 
@@ -118,20 +124,41 @@ The GitHub Actions workflow (`.github/workflows/build-and-attest.yml`) automatic
 1. **Generates locked requirements** with hashes using pip-tools
 2. **Creates SBOM** in CycloneDX format
 3. **Audits dependencies** for known vulnerabilities
-4. **Signs artifacts** using Sigstore/cosign
-5. **Creates SBOM attestation** linking the SBOM to the artifact
-6. **Generates SLSA provenance** (Level 3)
-7. **Publishes a GitHub Release** with all artifacts and verification instructions
+4. **Generates code hash** for runtime integrity verification
+5. **Signs artifacts** using Sigstore/cosign
+6. **Creates SBOM attestation** linking the SBOM to the artifact
+7. **Generates SLSA provenance** (Level 3)
+8. **Publishes a GitHub Release** with all artifacts and verification instructions
+
+### Quick Install
+
+```bash
+# Download the deploy script from the latest release
+curl -fsSL -o deploy.sh https://github.com/ionet-official/cc-attestation-agent-api/releases/latest/download/deploy.sh
+chmod +x deploy.sh
+
+# Get the latest version and deploy
+VERSION=$(curl -fsSL https://api.github.com/repos/ionet-official/cc-attestation-agent-api/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+sudo ./deploy.sh "$VERSION"
+```
+
+Or as a one-liner:
+
+```bash
+curl -fsSL https://github.com/ionet-official/cc-attestation-agent-api/releases/latest/download/deploy.sh | sudo bash -s -- $(curl -fsSL https://api.github.com/repos/ionet-official/cc-attestation-agent-api/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+```
 
 ### Deploying to a VM
 
+For manual deployment or specific versions:
+
 ```bash
-# Set your GitHub org/repo
+# Set your GitHub org/repo (optional, defaults shown)
 export GITHUB_ORG="ionet-official"
 export GITHUB_REPO="cc-attestation-agent-api"
 
 # Deploy a specific version
-./deploy/deploy.sh v1.0.0
+sudo ./deploy.sh v1.0.0
 ```
 
 The deployment script:
@@ -141,6 +168,8 @@ The deployment script:
 - Verifies SLSA provenance
 - Scans the SBOM for vulnerabilities
 - Installs the application with a systemd service
+- Creates integrity checksums for runtime verification
+- Sets immutable attribute on critical files (`chattr +i`)
 
 ### Manual Verification
 
@@ -169,10 +198,55 @@ slsa-verifier verify-artifact attestation-api-1.0.0.tar.gz \
 Or use the verification script:
 
 ```bash
-./deploy/verify.sh attestation-api-1.0.0.tar.gz \
-  --sbom sbom.cdx.json \
-  --provenance attestation-api-1.0.0.tar.gz.intoto.jsonl
+# Download and run verify script
+curl -fsSL -o verify.sh https://github.com/ionet-official/cc-attestation-agent-api/releases/latest/download/verify.sh
+chmod +x verify.sh
+./verify.sh v1.0.0
 ```
+
+### Runtime Integrity Verification
+
+After deployment, the service includes protections against tampering:
+
+**1. Immutable Files**
+
+Critical files (`main.py`, `_version.py`) are marked immutable with `chattr +i`. Only root can modify them after removing the attribute:
+
+```bash
+# To update (requires root)
+sudo chattr -i /opt/attestation-api/main.py
+# ... make changes ...
+sudo chattr +i /opt/attestation-api/main.py
+```
+
+**2. Pre-Start Integrity Check**
+
+The systemd service verifies file checksums before starting. If files have been tampered with, the service fails to start:
+
+```bash
+# Check service status after tampering attempt
+sudo systemctl status attestation-api
+# Will show: "sha256sum: main.py: FAILED"
+```
+
+**3. Runtime Code Hash Verification**
+
+Remote verifiers can confirm the deployed code matches the signed release:
+
+```bash
+# Get expected hash from release
+curl -sL https://github.com/ionet-official/cc-attestation-agent-api/releases/download/v1.0.0/code-hash.txt
+
+# Get runtime hash from API
+curl -s http://localhost:8000/ping | jq -r '.code_hash'
+
+# Or in one command
+EXPECTED=$(curl -sL https://github.com/.../code-hash.txt)
+ACTUAL=$(curl -s http://localhost:8000/ping | jq -r '.code_hash')
+[ "$EXPECTED" = "$ACTUAL" ] && echo "Verified" || echo "TAMPERED"
+```
+
+The `code_hash` is also included in `/attestation` responses, allowing verifiers to confirm code integrity as part of the attestation flow.
 
 ## Dependencies
 
@@ -194,3 +268,6 @@ This deployment process provides:
 | **SBOM attestation** | Exact dependencies at build time, linked to artifact |
 | **SLSA provenance** | Built from specific commit, by specific workflow |
 | **Vulnerability scan** | No known CVEs in dependencies at deploy time |
+| **Immutable files** | Critical code files cannot be modified without root |
+| **Pre-start check** | Service won't start if files have been tampered with |
+| **Runtime code hash** | Remote verifiers can confirm deployed code matches signed release |

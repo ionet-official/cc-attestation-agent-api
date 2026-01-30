@@ -100,6 +100,7 @@ download_file "${BASE_URL}/${ARTIFACT_NAME}.bundle" "app.bundle"
 download_file "${BASE_URL}/${ARTIFACT_NAME}.sbom-attestation.bundle" "sbom-attestation.bundle"
 download_file "${BASE_URL}/checksums.sha256" "checksums.sha256"
 download_file "${BASE_URL}/sbom.cdx.json" "sbom.cdx.json"
+download_file "${BASE_URL}/code-hash.txt" "code-hash.txt"
 
 if ! download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
     log_warn "SLSA provenance file not found, skipping provenance verification"
@@ -115,6 +116,10 @@ echo "=========================================="
 echo ""
 echo "Version: ${VERSION_TAG}"
 echo "Artifact: ${ARTIFACT_NAME}.tar.gz"
+echo "Expected code hash: $(cat code-hash.txt)"
+echo ""
+echo "To verify runtime integrity after deployment:"
+echo "  curl -s http://<host>:8000/ping | jq -r '.code_hash'"
 echo ""
 
 PASSED=0
