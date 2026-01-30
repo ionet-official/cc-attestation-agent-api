@@ -100,6 +100,13 @@ Response:
   - `signature`: ECDSA signature (hex-encoded)
   - `signing_address`: Public key used for verification
   - `signing_algo`: `ecdsa`
+  - `code_hash`: SHA256 hash of deployed code for integrity verification
+
+For streaming responses (`stream: true`), the signature is sent as a final SSE event:
+```
+event: signature
+data: {"text": "...", "signature": "...", "signing_address": "...", "signing_algo": "ecdsa", "code_hash": "..."}
+```
 
 Environment Variables:
 - `VLLM_API_KEY`: API key for authenticating with local vLLM service

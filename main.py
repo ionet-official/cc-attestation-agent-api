@@ -335,7 +335,8 @@ async def create_completion(payload: CompletionRequest):
                     "text": signing_text,
                     "signature": signature,
                     "signing_address": public_key,
-                    "signing_algo": "ecdsa"
+                    "signing_algo": "ecdsa",
+                    "code_hash": CODE_HASH
                 }
                 yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
 
@@ -369,7 +370,8 @@ async def create_completion(payload: CompletionRequest):
                     "text": signing_text,
                     "signature": signature,
                     "signing_address": public_key,
-                    "signing_algo": "ecdsa"
+                    "signing_algo": "ecdsa",
+                    "code_hash": CODE_HASH
                 }
             )
 
