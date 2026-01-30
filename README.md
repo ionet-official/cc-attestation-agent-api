@@ -117,7 +117,7 @@ When running in a container, `image_digest` is included in both headers and sign
 Environment Variables:
 - `VLLM_API_KEY`: API key for authenticating with local vLLM service
 
-**Note:** ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
+**Note:** The service expects a local vLLM server running on port 8001 at `http://localhost:8001/v1/chat/completions`. ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
 
 ## Local Development
 
