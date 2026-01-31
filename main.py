@@ -78,19 +78,17 @@ def query_vllm_container_digest(container_name: str = "vllm-server") -> Optional
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(docker_socket)
 
-        # Request container info
-        request = f"GET /containers/{container_name}/json HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        # Request container info (use HTTP/1.0 to avoid chunked encoding)
+        request = f"GET /containers/{container_name}/json HTTP/1.0\r\nHost: localhost\r\n\r\n"
         sock.send(request.encode())
 
-        # Read response
+        # Read entire response
         response = b""
         while True:
             chunk = sock.recv(4096)
             if not chunk:
                 break
             response += chunk
-            if b"\r\n\r\n" in response and b"}" in response:
-                break
 
         sock.close()
 
@@ -113,10 +111,10 @@ def query_vllm_container_digest(container_name: str = "vllm-server") -> Optional
         # Get the repo digest from image inspection
         image_id = container_info.get("Image", "")
 
-        # Query the image to get RepoDigests
+        # Query the image to get RepoDigests (use HTTP/1.0 to avoid chunked encoding)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(docker_socket)
-        request = f"GET /images/{image_id}/json HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        request = f"GET /images/{image_id}/json HTTP/1.0\r\nHost: localhost\r\n\r\n"
         sock.send(request.encode())
 
         response = b""
@@ -125,8 +123,6 @@ def query_vllm_container_digest(container_name: str = "vllm-server") -> Optional
             if not chunk:
                 break
             response += chunk
-            if b"\r\n\r\n" in response and b"}" in response:
-                break
         sock.close()
 
         response_str = response.decode()
