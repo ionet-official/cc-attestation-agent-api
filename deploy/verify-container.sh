@@ -14,6 +14,7 @@ fi
 # Prerequisites:
 #   - Docker or Podman (for pulling image)
 #   - cosign (will be installed if missing)
+#   - slsa-verifier (will be installed if missing)
 #   - grype (optional, for vulnerability scanning)
 #
 
@@ -108,6 +109,14 @@ install_cosign() {
     sudo mv /tmp/cosign /usr/local/bin/
 }
 
+install_slsa_verifier() {
+    log_step "Installing slsa-verifier..."
+    SLSA_VERIFIER_VERSION="v2.6.0"
+    curl -fsSL -o /tmp/slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERIFIER_VERSION}/slsa-verifier-linux-amd64"
+    chmod +x /tmp/slsa-verifier
+    sudo mv /tmp/slsa-verifier /usr/local/bin/
+}
+
 install_grype() {
     log_step "Installing grype..."
     curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
@@ -115,6 +124,10 @@ install_grype() {
 
 if ! command -v cosign &> /dev/null; then
     install_cosign
+fi
+
+if ! command -v slsa-verifier &> /dev/null; then
+    install_slsa_verifier
 fi
 
 # ==============================================================================
@@ -151,7 +164,22 @@ else
 fi
 
 # ==============================================================================
-# 3. Vulnerability scanning
+# 3. SLSA provenance verification (Level 3)
+# ==============================================================================
+log_step "Verifying SLSA provenance..."
+
+if slsa-verifier verify-image "$FULL_IMAGE" \
+    --source-uri "github.com/${GITHUB_ORG}/${GITHUB_REPO}" \
+    2>/dev/null; then
+    log_info "SLSA provenance verified (Level 3)"
+    ((PASSED++))
+else
+    log_error "SLSA provenance verification failed"
+    ((FAILED++))
+fi
+
+# ==============================================================================
+# 4. Vulnerability scanning
 # ==============================================================================
 if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     if ! command -v grype &> /dev/null; then

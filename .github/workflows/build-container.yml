@@ -16,6 +16,7 @@ permissions:
   packages: write
   id-token: write
   attestations: write
+  actions: read
 
 env:
   REGISTRY: ghcr.io
@@ -23,10 +24,10 @@ env:
   VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
-  build-and-push:
+  build-and-scan:
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.meta.outputs.tags }}
 
     steps:
@@ -64,8 +65,38 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push container image
+      - name: Build container image (local)
         id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan for critical vulnerabilities
+        run: |
+          # Install grype
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+          # Get the first tag for scanning
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+
+          echo "=== Scanning image for vulnerabilities ==="
+          grype "$IMAGE_TAG" --output table
+
+          echo "=== Checking for critical vulnerabilities ==="
+          if ! grype "$IMAGE_TAG" --fail-on critical; then
+            echo "::error::Critical vulnerabilities detected! Image will NOT be pushed."
+            exit 1
+          fi
+
+          echo "No critical vulnerabilities found. Proceeding with push."
+
+      - name: Push container image
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -79,8 +110,8 @@ jobs:
 
       - name: Output image digest
         run: |
-          echo "Image digest: ${{ steps.build.outputs.digest }}"
-          echo "${{ steps.build.outputs.digest }}" > image-digest.txt
+          echo "Image digest: ${{ steps.push.outputs.digest }}"
+          echo "${{ steps.push.outputs.digest }}" > image-digest.txt
 
       - name: Upload digest artifact
         uses: actions/upload-artifact@v6
@@ -90,7 +121,7 @@ jobs:
           retention-days: 90
 
   sign-and-attest:
-    needs: build-and-push
+    needs: build-and-scan
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -115,7 +146,7 @@ jobs:
 
       - name: Sign container image with Sigstore
         env:
-          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           echo "Signing image: $IMAGE"
@@ -126,7 +157,7 @@ jobs:
 
       - name: Generate SBOM for container image
         env:
-          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
 
@@ -137,7 +168,7 @@ jobs:
 
       - name: Attest SBOM to container image
         env:
-          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
 
@@ -148,26 +179,6 @@ jobs:
 
           echo "SBOM attestation attached to image"
 
-      - name: Scan for vulnerabilities
-        env:
-          DIGEST: ${{ needs.build-and-push.outputs.digest }}
-        run: |
-          # Install grype
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
-
-          echo "=== Scanning for vulnerabilities ==="
-          grype "$IMAGE" --output table
-
-          echo "=== Checking for critical vulnerabilities ==="
-          if ! grype "$IMAGE" --fail-on critical; then
-            echo "::error::Critical vulnerabilities detected!"
-            exit 1
-          fi
-
-          echo "No critical vulnerabilities found"
-
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v6
         with:
@@ -175,8 +186,24 @@ jobs:
           path: sbom.cdx.json
           retention-days: 90
 
+  # SLSA Level 3 provenance generation using official SLSA generator
+  # This runs in an isolated, hardened environment for stronger security guarantees
+  provenance:
+    needs: build-and-scan
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ghcr.io/${{ github.repository }}
+      digest: ${{ needs.build-and-scan.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
   release:
-    needs: [build-and-push, sign-and-attest]
+    needs: [build-and-scan, sign-and-attest, provenance]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -210,7 +237,7 @@ jobs:
             ## Container Image
 
             ```
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }}
             ```
 
             ## Quick Deploy
@@ -228,22 +255,28 @@ jobs:
 
             ### Verify image signature
             ```bash
-            cosign verify ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }} \
+            cosign verify ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
             ```
 
             ### Verify SBOM attestation
             ```bash
-            cosign verify-attestation ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }} \
+            cosign verify-attestation ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
               --type cyclonedx \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+            ```
+
+            ### Verify SLSA provenance (Level 3)
+            ```bash
+            slsa-verifier verify-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
+              --source-uri github.com/${{ github.repository }}
             ```
 
             ### Verify runtime integrity
             After deployment, the `image_digest` from the API should match:
             ```bash
             curl -s http://localhost:8000/ping | jq -r '.image_digest'
-            # Should return: ${{ needs.build-and-push.outputs.digest }}
+            # Should return: ${{ needs.build-and-scan.outputs.digest }}
             ```
