@@ -38,7 +38,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pip install --upgrade pip
-          pip install "pip-tools>=7.4.0" cyclonedx-bom pip-audit
+          pip install "pip-tools>=8.0.0" cyclonedx-bom pip-audit
 
       - name: Generate locked requirements with hashes
         run: |
