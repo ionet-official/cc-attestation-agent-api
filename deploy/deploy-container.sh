@@ -278,15 +278,36 @@ if [[ -f "$ENV_FILE" ]]; then
     ENV_ARGS="--env-file $ENV_FILE"
 fi
 
+# Build TDX/confidential computing args (optional - only on supported hardware)
+TDX_ARGS=""
+if [[ -e /dev/tdx_guest ]]; then
+    TDX_ARGS="$TDX_ARGS --device /dev/tdx_guest:/dev/tdx_guest"
+    log_info "TDX device detected, enabling hardware attestation"
+fi
+# Mount /sys/kernel/config if TSM report interface exists (for TDX attestation)
+# Note: We mount the parent dir because /sys/kernel/config doesn't exist in containers
+if [[ -d /sys/kernel/config/tsm/report ]]; then
+    TDX_ARGS="$TDX_ARGS -v /sys/kernel/config:/sys/kernel/config:rw"
+    log_info "TSM report interface detected, mounting for attestation"
+elif [[ -d /sys/kernel/config/tsm ]]; then
+    log_warn "TSM directory exists but report interface not found - skipping mount"
+fi
+if [[ -z "$TDX_ARGS" ]]; then
+    log_warn "No TDX/confidential computing hardware detected - CPU attestation will be unavailable"
+fi
+
 $CONTAINER_RUNTIME run -d \
     --name "$CONTAINER_NAME" \
+    --user root \
+    --network host \
+    --privileged \
+    --gpus all \
     --restart unless-stopped \
     -p 443:443 \
     -e "IMAGE_DIGEST=${IMAGE_DIGEST}" \
     -e "VLLM_CONTAINER_NAME=vllm-server" \
     $ENV_ARGS \
-    --device /dev/tdx_guest:/dev/tdx_guest \
-    -v /sys/kernel/config/tsm:/sys/kernel/config/tsm:rw \
+    $TDX_ARGS \
     -v "$CERTS_DIR:/app/certs:ro" \
     -v /var/run/docker.sock:/var/run/docker.sock:ro \
     "$FULL_IMAGE" \
