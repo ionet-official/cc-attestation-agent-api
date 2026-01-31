@@ -260,12 +260,12 @@ if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
         log_step "Scanning SBOM for vulnerabilities..."
 
-        VULN_OUTPUT=$(grype sbom:sbom.cdx.json --output table 2>&1) || true
+        # Show all vulnerabilities
+        grype sbom:sbom.cdx.json --output table 2>&1 || true
 
-        # Check for critical vulnerabilities only
-        if echo "$VULN_OUTPUT" | grep -qE "Critical"; then
-            log_error "Critical vulnerabilities found:"
-            echo "$VULN_OUTPUT" | grep -E "Critical" | head -10
+        # Fail if critical vulnerabilities are found
+        if ! grype sbom:sbom.cdx.json --fail-on critical 2>/dev/null; then
+            log_error "Critical vulnerabilities detected!"
             ((FAILED++))
         else
             log_info "No critical vulnerabilities found"

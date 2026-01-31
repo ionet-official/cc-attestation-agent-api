@@ -204,6 +204,7 @@ jobs:
             image-digest.txt
             sbom.cdx.json
             deploy/deploy-container.sh
+            deploy/verify-container.sh
           generate_release_notes: true
           body: |
             ## Container Image
