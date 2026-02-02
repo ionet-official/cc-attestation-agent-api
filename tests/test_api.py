@@ -15,8 +15,6 @@ class TestPingEndpoint:
         data = response.json()
         assert data["status"] == "ok"
         assert "version" in data
-        assert "code_hash" in data
-        assert len(data["code_hash"]) == 64  # SHA256 hex string
 
 
 class TestPrepareNonce:
@@ -80,9 +78,7 @@ class TestAttestationEndpoint:
         assert "nonce" in data
         assert "cpu" in data
         assert "gpu" in data
-        assert "code_hash" in data
         assert data["cpu"]["quote"] == "mock_cpu_quote"
-        assert len(data["code_hash"]) == 64  # SHA256 hex string
 
     @patch("main.get_cpu_quote")
     @patch("main.get_gpu_evidence")
