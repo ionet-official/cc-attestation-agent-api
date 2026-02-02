@@ -66,6 +66,7 @@ if [[ -z "$VERSION" ]]; then
     echo "  CONTAINER_NAME   Container name (default: cc-attestation)"
     echo "  CERTS_DIR        SSL certificates directory (default: /opt/ionet/cc-attestation-agent-api/certs)"
     echo "  CERT_CN          Common Name for SSL certificate (default: hostname)"
+    echo "  VLLM_API_KEY     API key for vLLM (will prompt if not set)"
     echo ""
     echo "SSL Certificates:"
     echo "  If certs/key.pem and certs/cert.pem don't exist, a self-signed"
@@ -268,6 +269,17 @@ else
 fi
 
 # ==============================================================================
+# Prompt for vLLM API key
+# ==============================================================================
+if [[ -z "${VLLM_API_KEY:-}" ]]; then
+    echo ""
+    read -p "Enter vLLM API key (required for /completion endpoint): " -r VLLM_API_KEY
+    if [[ -z "$VLLM_API_KEY" ]]; then
+        log_warn "No vLLM API key provided - /completion endpoint will not work"
+    fi
+fi
+
+# ==============================================================================
 # Run container
 # ==============================================================================
 log_info "Starting container..."
@@ -296,6 +308,12 @@ if [[ -z "$TDX_ARGS" ]]; then
     log_warn "No TDX/confidential computing hardware detected - CPU attestation will be unavailable"
 fi
 
+# Build vLLM args
+VLLM_ARGS=""
+if [[ -n "${VLLM_API_KEY:-}" ]]; then
+    VLLM_ARGS="-e VLLM_API_KEY=${VLLM_API_KEY}"
+fi
+
 $CONTAINER_RUNTIME run -d \
     --name "$CONTAINER_NAME" \
     --user root \
@@ -306,6 +324,7 @@ $CONTAINER_RUNTIME run -d \
     -p 443:443 \
     -e "IMAGE_DIGEST=${IMAGE_DIGEST}" \
     -e "VLLM_CONTAINER_NAME=vllm-server" \
+    $VLLM_ARGS \
     $ENV_ARGS \
     $TDX_ARGS \
     -v "$CERTS_DIR:/app/certs:ro" \
