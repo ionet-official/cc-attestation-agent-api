@@ -29,6 +29,10 @@ import httpx
 # This provides tamperproof evidence as the digest is derived from the signed container image
 IMAGE_DIGEST = os.getenv("IMAGE_DIGEST", "")
 
+# vLLM configuration
+VLLM_PORT = os.getenv("VLLM_PORT", "8000")
+VLLM_BASE_URL = f"http://localhost:{VLLM_PORT}"
+
 # vLLM provenance - queried directly from container runtime on startup
 VLLM_PROVENANCE: Optional[Dict[str, Any]] = None
 
@@ -125,10 +129,8 @@ def query_vllm_models() -> Optional[Dict[str, Any]]:
     import urllib.request
     import urllib.error
 
-    vllm_url = os.getenv("VLLM_URL", "http://localhost:8001")
-
     try:
-        req = urllib.request.Request(f"{vllm_url}/v1/models")
+        req = urllib.request.Request(f"{VLLM_BASE_URL}/v1/models")
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
             return data
@@ -247,7 +249,7 @@ def generate_keys_on_startup():
             print("Please ensure:")
             print("  1. vLLM container 'vllm-server' is running")
             print("  2. Docker socket is mounted (-v /var/run/docker.sock:/var/run/docker.sock:ro)")
-            print("  3. vLLM API is accessible at http://localhost:8001")
+            print(f"  3. vLLM API is accessible at {VLLM_BASE_URL}")
             print("")
             print("The attestation API cannot start without vLLM provenance.")
             print("=" * 60)
@@ -467,7 +469,7 @@ async def create_completion(payload: CompletionRequest):
         request_body = payload.model_dump(exclude_none=True)
         request_hash = compute_hash(request_body)
 
-        vllm_url = "http://localhost:8001/v1/chat/completions"
+        vllm_url = f"{VLLM_BASE_URL}/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {vllm_api_key}",
             "Content-Type": "application/json"

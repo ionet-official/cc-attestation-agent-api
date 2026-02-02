@@ -109,15 +109,16 @@ For `/completion` responses, vLLM provenance is also included:
 
 Environment Variables:
 - `VLLM_API_KEY`: API key for authenticating with local vLLM service
+- `VLLM_PORT`: Port for vLLM API (default: `8000`)
 - `VLLM_CONTAINER_NAME`: Name of vLLM container to query (default: `vllm-server`)
 
-**Note:** The service expects a local vLLM server running on port 8001 at `http://localhost:8001/v1/chat/completions`. ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
+**Note:** The service expects a local vLLM server at `http://localhost:8000/v1/chat/completions` (configurable via `VLLM_PORT`). ECDSA signing keys are automatically generated on application startup. The public key is returned in the `signing_address` response header for verification.
 
 ## Local Development
 
 ```bash
 pip install -r requirements-dev.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8001
 ```
 
 ## Production Deployment
@@ -206,7 +207,7 @@ The attestation API queries the Docker socket on startup to collect vLLM provena
 **Requirements:**
 - vLLM container must be named `vllm-server` (or set `VLLM_CONTAINER_NAME`)
 - Docker socket must be mounted (`-v /var/run/docker.sock:/var/run/docker.sock:ro`)
-- vLLM API must be accessible at `http://localhost:8001`
+- vLLM API must be accessible at `http://localhost:8000` (or set `VLLM_PORT`)
 
 ## Dependencies
 
