@@ -121,10 +121,8 @@ class TestCompletionEndpoint:
         assert "signature" in response.headers
         assert "signing_address" in response.headers
         assert "signing_algo" in response.headers
-        assert "code_hash" in response.headers
         assert response.headers["signing_algo"] == "ecdsa"
         assert response.headers["signing_address"] == test_keys["public_key"]
-        assert len(response.headers["code_hash"]) == 64  # SHA256 hex string
 
         response_body = response.json()
         assert response_body == sample_vllm_response
@@ -221,7 +219,6 @@ class TestCompletionEndpoint:
         assert '"signing_address"' in response_text
         assert '"signature"' in response_text
         assert '"signing_algo": "ecdsa"' in response_text  # Note: space after colon in JSON
-        assert '"code_hash"' in response_text
 
         # Extract and verify signature
         lines = response_text.split('\n')
@@ -238,8 +235,6 @@ class TestCompletionEndpoint:
         assert signature_data["signing_algo"] == "ecdsa"
         assert "text" in signature_data
         assert "signature" in signature_data
-        assert "code_hash" in signature_data
-        assert len(signature_data["code_hash"]) == 64  # SHA256 hex string
 
         # Verify signature is valid using eth_account (Ethereum-compatible)
         from eth_account import Account

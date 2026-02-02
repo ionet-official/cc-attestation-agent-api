@@ -14,7 +14,6 @@ import uuid
 import base64
 import hashlib
 import json
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 from eth_account import Account
@@ -24,31 +23,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 
-
-def compute_code_hash() -> str:
-    """
-    Compute SHA256 hash of deployed code files for integrity verification.
-
-    This hash can be compared against the expected hash from the signed release
-    to verify that the deployed code has not been tampered with.
-    """
-    code_files = ["main.py", "_version.py"]
-    hasher = hashlib.sha256()
-
-    script_dir = Path(__file__).parent
-
-    for filename in sorted(code_files):
-        filepath = script_dir / filename
-        if filepath.exists():
-            hasher.update(f"{filename}:".encode())
-            hasher.update(filepath.read_bytes())
-            hasher.update(b"\n")
-
-    return hasher.hexdigest()
-
-
-# Compute code hash once at module load time
-CODE_HASH = compute_code_hash()
 
 # Image digest is set at container build time and passed via environment variable
 # Format: sha256:<hex> (e.g., sha256:abc123...)
@@ -440,7 +414,7 @@ def sign_message(message: str, private_key_hex: str) -> str:
 
 @app.get("/ping")
 def ping():
-    response = {"status": "ok", "version": __version__, "code_hash": CODE_HASH}
+    response = {"status": "ok", "version": __version__}
     if IMAGE_DIGEST:
         response["image_digest"] = IMAGE_DIGEST
     return response
@@ -459,8 +433,7 @@ def create_attestation_quote(payload: AttestationRequest):
             "nonce": nonce_hex,
             "cpu": {"quote": cpu_quote_hex},
             "gpu": gpu_payload,
-            "signing_address": GENERATED_PUBLIC_KEY,
-            "code_hash": CODE_HASH
+            "signing_address": GENERATED_PUBLIC_KEY
         }
         if IMAGE_DIGEST:
             response["image_digest"] = IMAGE_DIGEST
@@ -542,8 +515,7 @@ async def create_completion(payload: CompletionRequest):
                     "text": signing_text,
                     "signature": signature,
                     "signing_address": public_key,
-                    "signing_algo": "ecdsa",
-                    "code_hash": CODE_HASH
+                    "signing_algo": "ecdsa"
                 }
                 if IMAGE_DIGEST:
                     signature_event["image_digest"] = IMAGE_DIGEST
@@ -578,8 +550,7 @@ async def create_completion(payload: CompletionRequest):
                 "text": signing_text,
                 "signature": signature,
                 "signing_address": public_key,
-                "signing_algo": "ecdsa",
-                "code_hash": CODE_HASH
+                "signing_algo": "ecdsa"
             }
             if IMAGE_DIGEST:
                 response_headers["image_digest"] = IMAGE_DIGEST

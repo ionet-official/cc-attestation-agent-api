@@ -1,4 +1,4 @@
-name: Build and Attest
+name: Build and Attest Container
 
 on:
   push:
@@ -13,19 +13,22 @@ on:
 
 permissions:
   contents: write
+  packages: write
   id-token: write
   attestations: write
   actions: read
 
 env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
   VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
-  build:
+  build-and-scan:
     runs-on: ubuntu-latest
     outputs:
-      artifact-hash: ${{ steps.hash.outputs.hash }}
-      artifact-name: ${{ steps.package.outputs.name }}
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ steps.meta.outputs.tags }}
 
     steps:
       - uses: actions/checkout@v6
@@ -35,171 +38,172 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install build dependencies
-        run: |
-          pip install "pip<25" --upgrade
-          pip install "pip-tools>=7.4.0" cyclonedx-bom pip-audit
-
-      - name: Generate locked requirements with hashes
-        run: |
-          pip-compile requirements.txt \
-            --generate-hashes \
-            --output-file requirements.lock.txt
-
-      - name: Install application dependencies
-        run: pip install -r requirements.lock.txt
-
-      - name: Generate SBOM (CycloneDX)
-        run: |
-          cyclonedx-py environment \
-            --of json \
-            -o sbom.cdx.json
-
-      - name: Audit dependencies for vulnerabilities
-        run: |
-          # Generate pip-audit JSON report for reference
-          pip-audit -r requirements.lock.txt \
-            --format json \
-            --output audit-report.json || true
-
-          # Display human-readable summary of all vulnerabilities
-          echo "=== All Vulnerabilities (informational) ==="
-          pip-audit -r requirements.lock.txt || true
-
-      - name: Fail on critical vulnerabilities
-        run: |
-          # Install grype for severity-based filtering
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-          echo "=== Checking for Critical Vulnerabilities ==="
-
-          # Scan SBOM and fail only on critical severity
-          if ! grype sbom:sbom.cdx.json --fail-on critical; then
-            echo "::error::Critical vulnerabilities detected! See above for details."
-            exit 1
-          fi
-
-          echo "No critical vulnerabilities found."
-
       - name: Embed version
         run: |
           VERSION="${{ env.VERSION }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          VERSION="${VERSION#v}"
           echo "__version__ = \"${VERSION}\"" > _version.py
 
-      - name: Generate code hash
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build container image (local)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan for critical vulnerabilities
         run: |
-          # Compute code hash matching the runtime computation in main.py
-          # Format: "filename:content\n" for each file, sorted by filename
-          (
-            for file in _version.py main.py; do
-              echo -n "${file}:"
-              cat "$file"
-              echo ""
-            done
-          ) | sha256sum | awk '{print $1}' > code-hash.txt
+          # Install grype
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-          echo "Code hash: $(cat code-hash.txt)"
+          # Get the first tag for scanning
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
 
-      - name: Create deployment package
-        id: package
+          echo "=== Scanning image for vulnerabilities ==="
+          grype "$IMAGE_TAG" --output table
+
+          echo "=== Checking for critical vulnerabilities ==="
+          if ! grype "$IMAGE_TAG" --fail-on critical; then
+            echo "::error::Critical vulnerabilities detected! Image will NOT be pushed."
+            exit 1
+          fi
+
+          echo "No critical vulnerabilities found. Proceeding with push."
+
+      - name: Push container image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Output image digest
         run: |
-          VERSION="${{ env.VERSION }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
-          ARTIFACT_NAME="attestation-api-${VERSION}"
+          echo "Image digest: ${{ steps.push.outputs.digest }}"
+          echo "${{ steps.push.outputs.digest }}" > image-digest.txt
 
-          mkdir -p dist
-          tar -czvf "dist/${ARTIFACT_NAME}.tar.gz" \
-            main.py \
-            _version.py \
-            requirements.txt \
-            requirements.lock.txt \
-            sbom.cdx.json
-
-          echo "name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-
-      - name: Calculate artifact hash
-        id: hash
-        run: |
-          cd dist
-          sha256sum *.tar.gz > checksums.sha256
-          echo "hash=$(sha256sum *.tar.gz | base64 -w0)" >> $GITHUB_OUTPUT
-          cat checksums.sha256
-
-      - name: Upload build artifacts
+      - name: Upload digest artifact
         uses: actions/upload-artifact@v6
         with:
-          name: deployment-package
-          path: |
-            dist/
-            sbom.cdx.json
-            audit-report.json
-            code-hash.txt
+          name: image-digest
+          path: image-digest.txt
           retention-days: 90
 
-  provenance:
-    needs: build
-    permissions:
-      actions: read
-      id-token: write
-      contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
-    with:
-      base64-subjects: ${{ needs.build.outputs.artifact-hash }}
-      upload-assets: true
-      private-repository: true
-
-  sign:
-    needs: build
+  sign-and-attest:
+    needs: build-and-scan
     runs-on: ubuntu-latest
     permissions:
+      packages: write
       id-token: write
-      contents: read
+      attestations: write
 
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v7
+      - uses: actions/checkout@v6
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
         with:
-          name: deployment-package
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign artifact with Sigstore
+      - name: Install syft for SBOM generation
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Sign container image with Sigstore
+        env:
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
         run: |
-          ARTIFACT=$(ls dist/*.tar.gz)
-          ARTIFACT_NAME=$(basename "$ARTIFACT" .tar.gz)
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          echo "Signing image: $IMAGE"
 
-          # Sign the artifact blob
-          cosign sign-blob "$ARTIFACT" \
-            --bundle "dist/${ARTIFACT_NAME}.bundle" \
-            --yes
+          cosign sign --yes "$IMAGE"
 
-          echo "Signed: $ARTIFACT"
+          echo "Image signed successfully"
 
-      - name: Attest SBOM
+      - name: Generate SBOM for container image
+        env:
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
         run: |
-          ARTIFACT=$(ls dist/*.tar.gz)
-          ARTIFACT_NAME=$(basename "$ARTIFACT" .tar.gz)
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
 
-          # Create SBOM attestation
-          cosign attest-blob "$ARTIFACT" \
+          # Generate SBOM in CycloneDX format
+          syft "$IMAGE" -o cyclonedx-json > sbom.cdx.json
+
+          echo "SBOM generated: sbom.cdx.json"
+
+      - name: Attest SBOM to container image
+        env:
+          DIGEST: ${{ needs.build-and-scan.outputs.digest }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+          cosign attest --yes \
             --predicate sbom.cdx.json \
             --type cyclonedx \
-            --bundle "dist/${ARTIFACT_NAME}.sbom-attestation.bundle" \
-            --yes
+            "$IMAGE"
 
-          echo "SBOM attestation created"
+          echo "SBOM attestation attached to image"
 
-      - name: Upload signed artifacts
+      - name: Upload SBOM artifact
         uses: actions/upload-artifact@v6
         with:
-          name: signed-deployment-package
-          path: dist/
+          name: container-sbom
+          path: sbom.cdx.json
           retention-days: 90
 
+  # SLSA Level 3 provenance generation using official SLSA generator
+  # This runs in an isolated, hardened environment for stronger security guarantees
+  provenance:
+    needs: build-and-scan
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ghcr.io/${{ github.repository }}
+      digest: ${{ needs.build-and-scan.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
   release:
-    needs: [build, sign, provenance]
+    needs: [build-and-scan, sign-and-attest, provenance]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -208,67 +212,71 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download signed artifacts
-        uses: actions/download-artifact@v7
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
         with:
-          name: signed-deployment-package
-          path: dist/
+          name: image-digest
+          path: .
 
-      - name: Download SBOM and audit report
-        uses: actions/download-artifact@v7
+      - name: Download SBOM
+        uses: actions/download-artifact@v6
         with:
-          name: deployment-package
-          path: reports/
+          name: container-sbom
+          path: .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*.tar.gz
-            dist/*.bundle
-            dist/checksums.sha256
-            reports/sbom.cdx.json
-            reports/audit-report.json
-            reports/code-hash.txt
+            image-digest.txt
+            sbom.cdx.json
             deploy/deploy.sh
             deploy/verify.sh
           generate_release_notes: true
           body: |
+            ## Container Image
+
+            ```
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }}
+            ```
+
+            ## Quick Deploy
+
+            ```bash
+            # Download deploy script
+            curl -fsSL -o deploy.sh https://github.com/${{ github.repository }}/releases/latest/download/deploy.sh
+            chmod +x deploy.sh
+
+            # Deploy (requires Docker or Podman)
+            sudo ./deploy.sh ${{ github.ref_name }}
+            ```
+
             ## Verification
 
-            ### Verify artifact signature
+            ### Verify image signature
             ```bash
-            cosign verify-blob ${{ needs.build.outputs.artifact-name }}.tar.gz \
-              --bundle ${{ needs.build.outputs.artifact-name }}.bundle \
+            cosign verify ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
             ```
 
             ### Verify SBOM attestation
             ```bash
-            cosign verify-blob-attestation ${{ needs.build.outputs.artifact-name }}.tar.gz \
-              --bundle ${{ needs.build.outputs.artifact-name }}.sbom-attestation.bundle \
+            cosign verify-attestation ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
               --type cyclonedx \
               --certificate-identity-regexp ".*" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
             ```
 
-            ### Verify SLSA provenance
+            ### Verify SLSA provenance (Level 3)
             ```bash
-            slsa-verifier verify-artifact ${{ needs.build.outputs.artifact-name }}.tar.gz \
-              --provenance-path ${{ needs.build.outputs.artifact-name }}.tar.gz.intoto.jsonl \
+            slsa-verifier verify-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-scan.outputs.digest }} \
               --source-uri github.com/${{ github.repository }}
             ```
 
-            ### Verify runtime code integrity
-            After deployment, compare the `code_hash` from the API with the expected value:
+            ### Verify runtime integrity
+            After deployment, the `image_digest` from the API should match:
             ```bash
-            # Get expected hash from release
-            EXPECTED=$(cat code-hash.txt)
-
-            # Get runtime hash from deployed API
-            ACTUAL=$(curl -s http://localhost:8000/ping | jq -r '.code_hash')
-
-            # Compare
-            [ "$EXPECTED" = "$ACTUAL" ] && echo "Code integrity verified" || echo "TAMPERING DETECTED"
+            curl -s http://localhost:8000/ping | jq -r '.image_digest'
+            # Should return: ${{ needs.build-and-scan.outputs.digest }}
             ```

@@ -4,15 +4,15 @@ if [ -z "${BASH_VERSION:-}" ]; then
     exit 1
 fi
 #
-# Attestation API Artifact Verification Script
+# Container Image Verification Script
 #
-# This script downloads and verifies the integrity, signature, and provenance of
-# release artifacts WITHOUT deploying them.
+# This script verifies the integrity, signature, SBOM attestation, and
+# scans for vulnerabilities of a container image WITHOUT deploying it.
 #
 # Usage: ./verify.sh <version> [--skip-vuln-scan]
 #
 # Prerequisites:
-#   - curl
+#   - Docker or Podman (for pulling image)
 #   - cosign (will be installed if missing)
 #   - slsa-verifier (will be installed if missing)
 #   - grype (optional, for vulnerability scanning)
@@ -26,6 +26,8 @@ fi
 
 GITHUB_ORG="${GITHUB_ORG:-ionet-official}"
 GITHUB_REPO="${GITHUB_REPO:-cc-attestation-agent-api}"
+REGISTRY="${REGISTRY:-ghcr.io}"
+IMAGE_NAME="${REGISTRY}/${GITHUB_ORG}/${GITHUB_REPO}"
 
 # Colors
 RED='\033[0;31m'
@@ -53,6 +55,7 @@ if [[ -z "$VERSION" ]]; then
     echo "Environment variables:"
     echo "  GITHUB_ORG       GitHub organization (default: ionet-official)"
     echo "  GITHUB_REPO      GitHub repository (default: cc-attestation-agent-api)"
+    echo "  REGISTRY         Container registry (default: ghcr.io)"
     exit 1
 fi
 
@@ -62,69 +65,38 @@ for arg in "$@"; do
     fi
 done
 
-# Normalize version (ensure v prefix)
+# Normalize version
 VERSION="${VERSION#v}"
 VERSION_TAG="v${VERSION}"
-
-# URLs
-BASE_URL="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/${VERSION_TAG}"
-ARTIFACT_NAME="attestation-api-${VERSION}"
-
-# Create temporary working directory
-WORK_DIR=$(mktemp -d)
-cleanup() {
-    log_step "Cleaning up temporary files..."
-    rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT
-
-cd "$WORK_DIR"
-
-# ==============================================================================
-# Download artifacts
-# ==============================================================================
-log_step "Downloading artifacts for version ${VERSION_TAG}..."
-
-download_file() {
-    local url="$1"
-    local output="$2"
-    if ! curl -fsSL -o "$output" "$url"; then
-        log_error "Failed to download: $url"
-        return 1
-    fi
-    echo "  Downloaded: $output"
-}
-
-download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz" "app.tar.gz"
-download_file "${BASE_URL}/${ARTIFACT_NAME}.bundle" "app.bundle"
-download_file "${BASE_URL}/${ARTIFACT_NAME}.sbom-attestation.bundle" "sbom-attestation.bundle"
-download_file "${BASE_URL}/checksums.sha256" "checksums.sha256"
-download_file "${BASE_URL}/sbom.cdx.json" "sbom.cdx.json"
-download_file "${BASE_URL}/code-hash.txt" "code-hash.txt"
-
-if ! download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
-    log_warn "SLSA provenance file not found, skipping provenance verification"
-    SKIP_PROVENANCE=true
-else
-    SKIP_PROVENANCE=false
-fi
-
-echo ""
-echo "=========================================="
-echo "  Artifact Verification Report"
-echo "=========================================="
-echo ""
-echo "Version: ${VERSION_TAG}"
-echo "Artifact: ${ARTIFACT_NAME}.tar.gz"
-echo "Expected code hash: $(cat code-hash.txt)"
-echo ""
-echo "To verify runtime integrity after deployment:"
-echo "  curl -sk https://<host>:443/ping | jq -r '.code_hash'"
-echo ""
 
 PASSED=0
 FAILED=0
 SKIPPED=0
+
+# ==============================================================================
+# Get image digest from release
+# ==============================================================================
+log_step "Fetching image digest for version ${VERSION_TAG}..."
+
+RELEASE_URL="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/${VERSION_TAG}"
+IMAGE_DIGEST=$(curl -fsSL "${RELEASE_URL}/image-digest.txt" 2>/dev/null | tr -d '[:space:]')
+
+if [[ -z "$IMAGE_DIGEST" ]]; then
+    log_error "Failed to fetch image digest from release"
+    exit 1
+fi
+
+FULL_IMAGE="${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+echo ""
+echo "=========================================="
+echo "  Container Image Verification Report"
+echo "=========================================="
+echo ""
+echo "Version: ${VERSION_TAG}"
+echo "Image: ${FULL_IMAGE}"
+echo "Digest: ${IMAGE_DIGEST}"
+echo ""
 
 # ==============================================================================
 # Install verification tools if needed
@@ -132,18 +104,17 @@ SKIPPED=0
 install_cosign() {
     log_step "Installing cosign..."
     COSIGN_VERSION="v2.2.4"
-    curl -fsSL -o cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
-    chmod +x cosign
-    sudo mv cosign /usr/local/bin/
+    curl -fsSL -o /tmp/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+    chmod +x /tmp/cosign
+    sudo mv /tmp/cosign /usr/local/bin/
 }
 
-SLSA_VERSION="v2.7.1"
-
 install_slsa_verifier() {
-    log_step "Installing slsa-verifier ${SLSA_VERSION}..."
-    curl -fsSL -o slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERSION}/slsa-verifier-linux-amd64"
-    chmod +x slsa-verifier
-    sudo mv slsa-verifier /usr/local/bin/
+    log_step "Installing slsa-verifier..."
+    SLSA_VERIFIER_VERSION="v2.6.0"
+    curl -fsSL -o /tmp/slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERIFIER_VERSION}/slsa-verifier-linux-amd64"
+    chmod +x /tmp/slsa-verifier
+    sudo mv /tmp/slsa-verifier /usr/local/bin/
 }
 
 install_grype() {
@@ -155,60 +126,32 @@ if ! command -v cosign &> /dev/null; then
     install_cosign
 fi
 
-if command -v slsa-verifier &> /dev/null; then
-    CURRENT_SLSA_VERSION=$(slsa-verifier version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-    REQUIRED_SLSA_VERSION="${SLSA_VERSION#v}"
-    if [[ "$(printf '%s\n' "$REQUIRED_SLSA_VERSION" "$CURRENT_SLSA_VERSION" | sort -V | head -1)" != "$REQUIRED_SLSA_VERSION" ]]; then
-        log_step "Upgrading slsa-verifier from v${CURRENT_SLSA_VERSION} to ${SLSA_VERSION}..."
-        install_slsa_verifier
-    fi
-else
+if ! command -v slsa-verifier &> /dev/null; then
     install_slsa_verifier
 fi
 
 # ==============================================================================
-# 1. Checksum verification
+# 1. Signature verification
 # ==============================================================================
-log_step "Verifying SHA256 checksum..."
+log_step "Verifying image signature with Sigstore..."
 
-EXPECTED_HASH=$(grep "${ARTIFACT_NAME}.tar.gz" checksums.sha256 | awk '{print $1}')
-ACTUAL_HASH=$(sha256sum app.tar.gz | awk '{print $1}')
-
-if [[ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]]; then
-    log_error "Checksum verification failed!"
-    echo "  Expected: $EXPECTED_HASH"
-    echo "  Actual:   $ACTUAL_HASH"
-    ((FAILED++))
-else
-    echo "  SHA256: $ACTUAL_HASH"
-    log_info "Checksum verified"
-    ((PASSED++))
-fi
-
-# ==============================================================================
-# 2. Signature verification
-# ==============================================================================
-log_step "Verifying Sigstore signature..."
-
-if cosign verify-blob app.tar.gz \
-    --bundle app.bundle \
+if cosign verify "$FULL_IMAGE" \
     --certificate-identity-regexp ".*" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
     2>/dev/null; then
-    log_info "Sigstore signature verified"
+    log_info "Image signature verified"
     ((PASSED++))
 else
-    log_error "Sigstore signature verification failed"
+    log_error "Image signature verification failed"
     ((FAILED++))
 fi
 
 # ==============================================================================
-# 3. SBOM attestation verification
+# 2. SBOM attestation verification
 # ==============================================================================
 log_step "Verifying SBOM attestation..."
 
-if cosign verify-blob-attestation app.tar.gz \
-    --bundle sbom-attestation.bundle \
+if cosign verify-attestation "$FULL_IMAGE" \
     --type cyclonedx \
     --certificate-identity-regexp ".*" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
@@ -221,28 +164,22 @@ else
 fi
 
 # ==============================================================================
-# 4. SLSA provenance verification
+# 3. SLSA provenance verification (Level 3)
 # ==============================================================================
-if [[ "$SKIP_PROVENANCE" != "true" ]]; then
-    log_step "Verifying SLSA provenance..."
+log_step "Verifying SLSA provenance..."
 
-    if slsa-verifier verify-artifact app.tar.gz \
-        --provenance-path provenance.intoto.jsonl \
-        --source-uri "github.com/${GITHUB_ORG}/${GITHUB_REPO}" \
-        2>/dev/null; then
-        log_info "SLSA provenance verified"
-        ((PASSED++))
-    else
-        log_error "SLSA provenance verification failed"
-        ((FAILED++))
-    fi
+if slsa-verifier verify-image "$FULL_IMAGE" \
+    --source-uri "github.com/${GITHUB_ORG}/${GITHUB_REPO}" \
+    2>/dev/null; then
+    log_info "SLSA provenance verified (Level 3)"
+    ((PASSED++))
 else
-    log_warn "SLSA provenance not available, skipping"
-    ((SKIPPED++))
+    log_error "SLSA provenance verification failed"
+    ((FAILED++))
 fi
 
 # ==============================================================================
-# 5. Vulnerability scanning
+# 4. Vulnerability scanning
 # ==============================================================================
 if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     if ! command -v grype &> /dev/null; then
@@ -258,13 +195,13 @@ if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     fi
 
     if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
-        log_step "Scanning SBOM for vulnerabilities..."
+        log_step "Scanning image for vulnerabilities..."
 
         # Show all vulnerabilities
-        grype sbom:sbom.cdx.json --output table 2>&1 || true
+        grype "$FULL_IMAGE" --output table 2>&1 || true
 
         # Fail if critical vulnerabilities are found
-        if ! grype sbom:sbom.cdx.json --fail-on critical 2>/dev/null; then
+        if ! grype "$FULL_IMAGE" --fail-on critical 2>/dev/null; then
             log_error "Critical vulnerabilities detected!"
             ((FAILED++))
         else
@@ -294,8 +231,16 @@ echo ""
 
 if [[ $FAILED -gt 0 ]]; then
     echo -e "${RED}VERIFICATION FAILED${NC}"
+    echo ""
+    echo "The container image failed one or more verification checks."
+    echo "Do NOT deploy this image until the issues are resolved."
     exit 1
 else
     echo -e "${GREEN}VERIFICATION PASSED${NC}"
+    echo ""
+    echo "The container image is verified and safe to deploy."
+    echo ""
+    echo "To deploy:"
+    echo "  ./deploy.sh ${VERSION_TAG}"
     exit 0
 fi

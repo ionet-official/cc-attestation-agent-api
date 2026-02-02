@@ -1,44 +1,52 @@
 #!/bin/bash
-if [ -z "${BASH_VERSION:-}" ]; then
-    echo "ERROR: This script must be run with bash. Please run as 'bash $0' or './$0'" >&2
-    exit 1
-fi
 #
-# Attestation API Deployment Script
+# Container-based Attestation API Deployment Script
 #
-# This script downloads, verifies, and deploys the attestation API
-# with full provenance and SBOM verification.
+# This script pulls, verifies, and deploys the attestation API as a container
+# with full signature and SBOM verification.
 #
 # Usage: ./deploy.sh <version> [--skip-vuln-scan]
 #
 # Prerequisites:
-#   - curl, tar, python3, python3-venv
+#   - Docker or Podman
 #   - cosign (will be installed if missing)
 #   - slsa-verifier (will be installed if missing)
 #   - grype (optional, for vulnerability scanning)
 #
 set -e
 set -u
-if [ -n "${BASH_VERSION:-}" ]; then
-    set -o pipefail
-fi
+set -o pipefail
 
-# Configuration - UPDATE THESE FOR YOUR ENVIRONMENT
+# Configuration
 GITHUB_ORG="${GITHUB_ORG:-ionet-official}"
 GITHUB_REPO="${GITHUB_REPO:-cc-attestation-agent-api}"
-DEPLOY_DIR="${DEPLOY_DIR:-/opt/ionet/cc-attestation-agent-api}"
-SERVICE_USER="${SERVICE_USER:-root}"
-SERVICE_GROUP="${SERVICE_GROUP:-root}"
+REGISTRY="${REGISTRY:-ghcr.io}"
+IMAGE_NAME="${REGISTRY}/${GITHUB_ORG}/${GITHUB_REPO}"
+CONTAINER_NAME="${CONTAINER_NAME:-cc-attestation}"
+CERTS_DIR="${CERTS_DIR:-/opt/ionet/cc-attestation-agent-api/certs}"
+ENV_FILE="${ENV_FILE:-/etc/default/cc-attestation}"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info() { echo -e "${GREEN}==>${NC} $1"; }
 log_warn() { echo -e "${YELLOW}==> WARNING:${NC} $1"; }
 log_error() { echo -e "${RED}==> ERROR:${NC} $1" >&2; }
+
+# Detect container runtime
+if command -v docker &> /dev/null; then
+    CONTAINER_RUNTIME="docker"
+elif command -v podman &> /dev/null; then
+    CONTAINER_RUNTIME="podman"
+else
+    log_error "Neither Docker nor Podman found. Please install one of them."
+    exit 1
+fi
+
+log_info "Using container runtime: $CONTAINER_RUNTIME"
 
 # Parse arguments
 VERSION="${1:-}"
@@ -54,9 +62,9 @@ if [[ -z "$VERSION" ]]; then
     echo "Environment variables:"
     echo "  GITHUB_ORG       GitHub organization (default: ionet-official)"
     echo "  GITHUB_REPO      GitHub repository (default: cc-attestation-agent-api)"
-    echo "  DEPLOY_DIR       Deployment directory (default: /opt/ionet/cc-attestation-agent-api)"
-    echo "  SERVICE_USER     User to run the service (default: root)"
-    echo "  SERVICE_GROUP    Group for the service (default: root)"
+    echo "  REGISTRY         Container registry (default: ghcr.io)"
+    echo "  CONTAINER_NAME   Container name (default: cc-attestation)"
+    echo "  CERTS_DIR        SSL certificates directory (default: /opt/ionet/cc-attestation-agent-api/certs)"
     echo "  CERT_CN          Common Name for SSL certificate (default: hostname)"
     echo ""
     echo "SSL Certificates:"
@@ -72,69 +80,27 @@ for arg in "$@"; do
     fi
 done
 
-# Normalize version (ensure v prefix)
+# Normalize version
 VERSION="${VERSION#v}"
 VERSION_TAG="v${VERSION}"
 
-# URLs
-BASE_URL="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/${VERSION_TAG}"
-ARTIFACT_NAME="attestation-api-${VERSION}"
-
-# Create temporary working directory
-WORK_DIR=$(mktemp -d)
-cleanup() {
-    log_info "Cleaning up temporary files..."
-    rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT
-
-cd "$WORK_DIR"
-
 # ==============================================================================
-# Download artifacts
+# Get image digest from release
 # ==============================================================================
-log_info "Downloading artifacts for version ${VERSION_TAG}..."
+log_info "Fetching image digest for version ${VERSION_TAG}..."
 
-download_file() {
-    local url="$1"
-    local output="$2"
-    if ! curl -fsSL -o "$output" "$url"; then
-        log_error "Failed to download: $url"
-        return 1
-    fi
-    log_info "Downloaded: $output"
-}
+RELEASE_URL="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/${VERSION_TAG}"
 
-download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz" "app.tar.gz"
-download_file "${BASE_URL}/${ARTIFACT_NAME}.bundle" "app.bundle"
-download_file "${BASE_URL}/${ARTIFACT_NAME}.sbom-attestation.bundle" "sbom-attestation.bundle"
-download_file "${BASE_URL}/checksums.sha256" "checksums.sha256"
-download_file "${BASE_URL}/sbom.cdx.json" "sbom.cdx.json"
-download_file "${BASE_URL}/code-hash.txt" "code-hash.txt"
+# Download image digest
+IMAGE_DIGEST=$(curl -fsSL "${RELEASE_URL}/image-digest.txt" | tr -d '[:space:]')
 
-if ! download_file "${BASE_URL}/${ARTIFACT_NAME}.tar.gz.intoto.jsonl" "provenance.intoto.jsonl" 2>/dev/null; then
-    log_warn "SLSA provenance file not found, skipping provenance verification"
-    SKIP_PROVENANCE=true
-else
-    SKIP_PROVENANCE=false
-fi
-
-# ==============================================================================
-# Verify checksum
-# ==============================================================================
-log_info "Verifying SHA256 checksum..."
-
-# Extract expected hash for our file
-EXPECTED_HASH=$(grep "${ARTIFACT_NAME}.tar.gz" checksums.sha256 | awk '{print $1}')
-ACTUAL_HASH=$(sha256sum app.tar.gz | awk '{print $1}')
-
-if [[ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]]; then
-    log_error "Checksum verification failed!"
-    log_error "Expected: $EXPECTED_HASH"
-    log_error "Actual:   $ACTUAL_HASH"
+if [[ -z "$IMAGE_DIGEST" ]]; then
+    log_error "Failed to fetch image digest"
     exit 1
 fi
-log_info "Checksum verified successfully"
+
+FULL_IMAGE="${IMAGE_NAME}@${IMAGE_DIGEST}"
+log_info "Image: ${FULL_IMAGE}"
 
 # ==============================================================================
 # Install verification tools if needed
@@ -142,18 +108,17 @@ log_info "Checksum verified successfully"
 install_cosign() {
     log_info "Installing cosign..."
     COSIGN_VERSION="v2.2.4"
-    curl -fsSL -o cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
-    chmod +x cosign
-    sudo mv cosign /usr/local/bin/
+    curl -fsSL -o /tmp/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+    chmod +x /tmp/cosign
+    sudo mv /tmp/cosign /usr/local/bin/
 }
 
-SLSA_VERSION="v2.7.1"
-
 install_slsa_verifier() {
-    log_info "Installing slsa-verifier ${SLSA_VERSION}..."
-    curl -fsSL -o slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERSION}/slsa-verifier-linux-amd64"
-    chmod +x slsa-verifier
-    sudo mv slsa-verifier /usr/local/bin/
+    log_info "Installing slsa-verifier..."
+    SLSA_VERIFIER_VERSION="v2.6.0"
+    curl -fsSL -o /tmp/slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERIFIER_VERSION}/slsa-verifier-linux-amd64"
+    chmod +x /tmp/slsa-verifier
+    sudo mv /tmp/slsa-verifier /usr/local/bin/
 }
 
 install_grype() {
@@ -165,59 +130,54 @@ if ! command -v cosign &> /dev/null; then
     install_cosign
 fi
 
-if command -v slsa-verifier &> /dev/null; then
-    CURRENT_SLSA_VERSION=$(slsa-verifier version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-    REQUIRED_SLSA_VERSION="${SLSA_VERSION#v}"
-    if [[ "$(printf '%s\n' "$REQUIRED_SLSA_VERSION" "$CURRENT_SLSA_VERSION" | sort -V | head -1)" != "$REQUIRED_SLSA_VERSION" ]]; then
-        log_info "Upgrading slsa-verifier from v${CURRENT_SLSA_VERSION} to ${SLSA_VERSION}..."
-        install_slsa_verifier
-    fi
-else
+if ! command -v slsa-verifier &> /dev/null; then
     install_slsa_verifier
 fi
 
 # ==============================================================================
-# Verify Sigstore signature
+# Verify image signature
 # ==============================================================================
-log_info "Verifying artifact signature with Sigstore..."
+log_info "Verifying image signature with Sigstore..."
 
-cosign verify-blob app.tar.gz \
-    --bundle app.bundle \
+if ! cosign verify "$FULL_IMAGE" \
     --certificate-identity-regexp ".*" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    || { log_error "Signature verification failed!"; exit 1; }
+    2>/dev/null; then
+    log_error "Image signature verification failed!"
+    exit 1
+fi
 
-log_info "Artifact signature verified successfully"
+log_info "Image signature verified successfully"
 
 # ==============================================================================
 # Verify SBOM attestation
 # ==============================================================================
 log_info "Verifying SBOM attestation..."
 
-cosign verify-blob-attestation app.tar.gz \
-    --bundle sbom-attestation.bundle \
+if ! cosign verify-attestation "$FULL_IMAGE" \
     --type cyclonedx \
     --certificate-identity-regexp ".*" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    || { log_error "SBOM attestation verification failed!"; exit 1; }
+    2>/dev/null; then
+    log_error "SBOM attestation verification failed!"
+    exit 1
+fi
 
 log_info "SBOM attestation verified successfully"
 
 # ==============================================================================
-# Verify SLSA provenance
+# Verify SLSA provenance (Level 3)
 # ==============================================================================
-if [[ "$SKIP_PROVENANCE" != "true" ]]; then
-    log_info "Verifying SLSA provenance..."
+log_info "Verifying SLSA provenance..."
 
-    slsa-verifier verify-artifact app.tar.gz \
-        --provenance-path provenance.intoto.jsonl \
-        --source-uri "github.com/${GITHUB_ORG}/${GITHUB_REPO}" \
-        || { log_error "SLSA provenance verification failed!"; exit 1; }
-
-    log_info "SLSA provenance verified successfully"
-else
-    log_warn "Skipping SLSA provenance verification"
+if ! slsa-verifier verify-image "$FULL_IMAGE" \
+    --source-uri "github.com/${GITHUB_ORG}/${GITHUB_REPO}" \
+    2>/dev/null; then
+    log_error "SLSA provenance verification failed!"
+    exit 1
 fi
+
+log_info "SLSA provenance verified successfully (Level 3)"
 
 # ==============================================================================
 # Vulnerability scanning
@@ -236,12 +196,10 @@ if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
     fi
 
     if [[ "$SKIP_VULN_SCAN" != "true" ]]; then
-        log_info "Scanning SBOM for vulnerabilities..."
+        log_info "Scanning image for vulnerabilities..."
 
-        # Scan and fail on critical vulnerabilities only
-        if ! grype sbom:sbom.cdx.json --fail-on critical; then
+        if ! grype "$FULL_IMAGE" --fail-on critical; then
             log_error "Critical vulnerabilities detected!"
-            log_error "Review the vulnerabilities above and decide whether to proceed."
             read -p "Continue anyway? [y/N] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -263,112 +221,35 @@ log_info "============================================"
 echo ""
 
 # ==============================================================================
-# Create service user if needed
+# Pull image
 # ==============================================================================
-if ! id "$SERVICE_USER" &>/dev/null; then
-    log_info "Creating service user: $SERVICE_USER"
-    sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+log_info "Pulling container image..."
+
+$CONTAINER_RUNTIME pull "$FULL_IMAGE"
+
+# ==============================================================================
+# Stop existing container if running
+# ==============================================================================
+if $CONTAINER_RUNTIME ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    log_info "Stopping existing container..."
+    $CONTAINER_RUNTIME stop "$CONTAINER_NAME" 2>/dev/null || true
+    $CONTAINER_RUNTIME rm "$CONTAINER_NAME" 2>/dev/null || true
 fi
 
 # ==============================================================================
-# Deploy application
+# Generate SSL certificates if needed
 # ==============================================================================
-log_info "Deploying to ${DEPLOY_DIR}..."
+CERT_FILE="${CERTS_DIR}/cert.pem"
+KEY_FILE="${CERTS_DIR}/key.pem"
 
-# Backup existing deployment if present
-BACKUP_DIR=""
-if [[ -d "$DEPLOY_DIR" ]]; then
-    BACKUP_DIR="${DEPLOY_DIR}.backup.$(date +%Y%m%d%H%M%S)"
-    log_info "Backing up existing deployment to ${BACKUP_DIR}"
+sudo mkdir -p "$CERTS_DIR"
 
-    # Remove immutable attribute from files before backup (if set)
-    for file in main.py _version.py; do
-        if [[ -f "$DEPLOY_DIR/$file" ]]; then
-            sudo chattr -i "$DEPLOY_DIR/$file" 2>/dev/null || true
-        fi
-    done
-
-    sudo mv "$DEPLOY_DIR" "$BACKUP_DIR"
-fi
-
-# Create deployment directory
-sudo mkdir -p "$DEPLOY_DIR"
-
-# Extract application
-sudo tar -xzf app.tar.gz -C "$DEPLOY_DIR"
-
-# Copy SBOM and code hash for reference
-sudo cp sbom.cdx.json "$DEPLOY_DIR/"
-sudo cp code-hash.txt "$DEPLOY_DIR/"
-
-# Set ownership
-sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$DEPLOY_DIR"
-
-# ==============================================================================
-# Create integrity checksums for runtime verification
-# ==============================================================================
-log_info "Creating integrity checksums..."
-
-# Generate checksums for critical files (used by systemd pre-start check)
-cd "$DEPLOY_DIR"
-sudo sha256sum main.py _version.py > .integrity-checksums
-sudo chown root:root .integrity-checksums
-sudo chmod 444 .integrity-checksums
-
-log_info "Integrity checksums saved to ${DEPLOY_DIR}/.integrity-checksums"
-
-# ==============================================================================
-# Set up Python virtual environment
-# ==============================================================================
-log_info "Setting up Python virtual environment..."
-
-cd "$DEPLOY_DIR"
-sudo -u "$SERVICE_USER" python3 -m venv venv
-sudo -u "$SERVICE_USER" ./venv/bin/pip install --upgrade pip
-sudo -u "$SERVICE_USER" ./venv/bin/pip install -r requirements.lock.txt
-
-# ==============================================================================
-# Set immutable attribute on critical files
-# ==============================================================================
-log_info "Setting immutable attribute on critical files..."
-
-# Make critical files immutable to prevent tampering
-# Only root can remove this attribute with chattr -i
-for file in main.py _version.py; do
-    sudo chattr +i "$DEPLOY_DIR/$file"
-done
-
-log_info "Files protected: main.py, _version.py (use 'sudo chattr -i' to modify)"
-
-# ==============================================================================
-# Restore or generate SSL certificates
-# ==============================================================================
-CERT_DIR="${DEPLOY_DIR}/certs"
-CERT_FILE="${CERT_DIR}/cert.pem"
-KEY_FILE="${CERT_DIR}/key.pem"
-
-sudo mkdir -p "$CERT_DIR"
-
-# First, try to restore certs from backup (preserves production certs across deploys)
-if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
-    if [[ -n "$BACKUP_DIR" ]] && [[ -f "${BACKUP_DIR}/certs/cert.pem" ]] && [[ -f "${BACKUP_DIR}/certs/key.pem" ]]; then
-        log_info "Restoring SSL certificates from backup..."
-        sudo cp "${BACKUP_DIR}/certs/cert.pem" "$CERT_FILE"
-        sudo cp "${BACKUP_DIR}/certs/key.pem" "$KEY_FILE"
-        sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CERT_DIR"
-        sudo chmod 600 "$KEY_FILE"
-        sudo chmod 644 "$CERT_FILE"
-        log_info "SSL certificates restored from backup"
-    fi
-fi
-
-# If still no certs, generate self-signed
 if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
     log_info "SSL certificates not found, generating self-signed certificates..."
-    
+
     # Get hostname for certificate CN
     CERT_CN="${CERT_CN:-$(hostname -f 2>/dev/null || echo 'localhost')}"
-    
+
     # Generate self-signed certificate valid for 365 days
     sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "$KEY_FILE" \
@@ -376,11 +257,10 @@ if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
         -subj "/CN=${CERT_CN}" \
         -addext "subjectAltName=DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1" \
         2>/dev/null
-    
-    sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CERT_DIR"
+
     sudo chmod 600 "$KEY_FILE"
     sudo chmod 644 "$CERT_FILE"
-    
+
     log_info "Self-signed certificates generated for CN=${CERT_CN}"
     log_warn "For production, replace with proper certificates (e.g., Cloudflare Origin Certificate)"
 else
@@ -388,68 +268,85 @@ else
 fi
 
 # ==============================================================================
-# Install/update systemd service
+# Run container
 # ==============================================================================
-log_info "Installing systemd service..."
+log_info "Starting container..."
 
-sudo cp /dev/stdin /etc/systemd/system/cc-attestation.service << EOF
-[Unit]
-Description=FastAPI Confidential Computing Attestation Service
-After=network.target
+# Build environment file args if exists
+ENV_ARGS=""
+if [[ -f "$ENV_FILE" ]]; then
+    ENV_ARGS="--env-file $ENV_FILE"
+fi
 
-[Service]
-Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_GROUP}
-WorkingDirectory=${DEPLOY_DIR}
+# Build TDX/confidential computing args (optional - only on supported hardware)
+TDX_ARGS=""
+if [[ -e /dev/tdx_guest ]]; then
+    TDX_ARGS="$TDX_ARGS --device /dev/tdx_guest:/dev/tdx_guest"
+    log_info "TDX device detected, enabling hardware attestation"
+fi
+# Mount /sys/kernel/config if TSM report interface exists (for TDX attestation)
+# Note: We mount the parent dir because /sys/kernel/config doesn't exist in containers
+if [[ -d /sys/kernel/config/tsm/report ]]; then
+    TDX_ARGS="$TDX_ARGS -v /sys/kernel/config:/sys/kernel/config:rw"
+    log_info "TSM report interface detected, mounting for attestation"
+elif [[ -d /sys/kernel/config/tsm ]]; then
+    log_warn "TSM directory exists but report interface not found - skipping mount"
+fi
+if [[ -z "$TDX_ARGS" ]]; then
+    log_warn "No TDX/confidential computing hardware detected - CPU attestation will be unavailable"
+fi
 
-# Verify file integrity before starting - fails if files have been tampered with
-ExecStartPre=/bin/bash -c 'cd ${DEPLOY_DIR} && sha256sum -c .integrity-checksums'
+$CONTAINER_RUNTIME run -d \
+    --name "$CONTAINER_NAME" \
+    --user root \
+    --network host \
+    --privileged \
+    --gpus all \
+    --restart unless-stopped \
+    -p 443:443 \
+    -e "IMAGE_DIGEST=${IMAGE_DIGEST}" \
+    -e "VLLM_CONTAINER_NAME=vllm-server" \
+    $ENV_ARGS \
+    $TDX_ARGS \
+    -v "$CERTS_DIR:/app/certs:ro" \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+    "$FULL_IMAGE" \
+    python -m uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile /app/certs/key.pem --ssl-certfile /app/certs/cert.pem
 
-ExecStart=${DEPLOY_DIR}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 443 --ssl-keyfile certs/key.pem --ssl-certfile certs/cert.pem
-Restart=always
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/etc/default/cc-attestation
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=/sys/kernel/config/tsm ${DEPLOY_DIR}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable cc-attestation.service
+# Wait for container to start
+sleep 3
 
 # ==============================================================================
-# Start/restart service
+# Health check
 # ==============================================================================
-log_info "Starting cc-attestation service..."
+log_info "Checking container health..."
 
-sudo systemctl restart cc-attestation.service
+if $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    # Verify the image digest is correctly set
+    RUNTIME_DIGEST=$(curl -sk https://localhost:443/ping 2>/dev/null | grep -o '"image_digest":"[^"]*"' | cut -d'"' -f4 || echo "")
 
-# Wait a moment and check status
-sleep 2
+    if [[ "$RUNTIME_DIGEST" == "$IMAGE_DIGEST" ]]; then
+        log_info "Container started successfully!"
+        log_info "Image digest verified: ${IMAGE_DIGEST}"
+    else
+        log_warn "Container started but image digest mismatch"
+        log_warn "Expected: ${IMAGE_DIGEST}"
+        log_warn "Got: ${RUNTIME_DIGEST:-<empty>}"
+    fi
 
-if sudo systemctl is-active --quiet cc-attestation.service; then
-    log_info "Service started successfully!"
     echo ""
     log_info "============================================"
     log_info "Deployment complete!"
     log_info "============================================"
     echo ""
-    echo "Service status:"
-    sudo systemctl status cc-attestation.service --no-pager
-    echo ""
+    echo "Container: $CONTAINER_NAME"
+    echo "Image: $FULL_IMAGE"
     echo "API endpoint: https://localhost:443"
     echo "Health check: curl -k https://localhost:443/ping"
+    echo ""
+    echo "View logs: $CONTAINER_RUNTIME logs -f $CONTAINER_NAME"
 else
-    log_error "Service failed to start!"
-    sudo systemctl status cc-attestation.service --no-pager
+    log_error "Container failed to start!"
+    $CONTAINER_RUNTIME logs "$CONTAINER_NAME"
     exit 1
 fi
