@@ -216,7 +216,6 @@ def generate_keys_on_startup():
         print("=" * 60)
         print("Keys generated successfully on startup")
         print(f"Public address: {GENERATED_PUBLIC_KEY}")
-        print(f"Code hash: {CODE_HASH}")
         if IMAGE_DIGEST:
             print(f"Image digest: {IMAGE_DIGEST}")
 
