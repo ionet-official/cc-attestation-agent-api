@@ -483,6 +483,7 @@ async def create_completion(payload: CompletionRequest):
         if payload.stream:
             async def stream_with_signature():
                 accumulated_chunks = []
+                buffered_done_message = None
 
                 async with httpx.AsyncClient() as client:
                     async with client.stream(
@@ -495,10 +496,17 @@ async def create_completion(payload: CompletionRequest):
                         response.raise_for_status()
 
                         async for chunk in response.aiter_bytes():
-                            # Forward chunk to client
-                            yield chunk
                             # Accumulate for signature
                             accumulated_chunks.append(chunk)
+
+                            # Check if this chunk contains [DONE] message
+                            chunk_str = chunk.decode("utf-8")
+                            if "data: [DONE]" in chunk_str:
+                                # Buffer the DONE message to send after signature
+                                buffered_done_message = chunk
+                            else:
+                                # Forward chunk to client immediately
+                                yield chunk
 
                 # After streaming completes, compute signature
                 full_response = b"".join(accumulated_chunks).decode("utf-8")
@@ -515,7 +523,7 @@ async def create_completion(payload: CompletionRequest):
                 signing_text = f"{request_hash}:{response_hash}"
                 signature = sign_message(signing_text, private_key)
 
-                # Send signature as custom SSE event
+                # Send signature as custom SSE event BEFORE [DONE]
                 signature_event = {
                     "text": signing_text,
                     "signature": signature,
@@ -527,6 +535,10 @@ async def create_completion(payload: CompletionRequest):
                 if VLLM_PROVENANCE:
                     signature_event["vllm"] = VLLM_PROVENANCE
                 yield f"event: signature\ndata: {json.dumps(signature_event)}\n\n".encode()
+
+                # Now send the buffered [DONE] message
+                if buffered_done_message:
+                    yield buffered_done_message
 
             return StreamingResponse(
                 stream_with_signature(),

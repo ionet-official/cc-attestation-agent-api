@@ -220,6 +220,15 @@ class TestCompletionEndpoint:
         assert '"signature"' in response_text
         assert '"signing_algo": "ecdsa"' in response_text  # Note: space after colon in JSON
 
+        # Verify signature comes BEFORE [DONE]
+        signature_pos = response_text.find('event: signature')
+        done_pos = response_text.find('data: [DONE]')
+        assert signature_pos < done_pos, "Signature event should appear before [DONE] message"
+
+        # Verify there's only one [DONE] message
+        done_count = response_text.count('data: [DONE]')
+        assert done_count == 1, f"Expected exactly 1 [DONE] message, found {done_count}"
+
         # Extract and verify signature
         lines = response_text.split('\n')
         signature_data = None
@@ -307,6 +316,15 @@ class TestCompletionEndpoint:
         # Verify signature event is appended
         assert 'event: signature' in response_text
         assert 'data: ' in response_text
+
+        # Verify signature comes BEFORE [DONE]
+        signature_pos = response_text.find('event: signature')
+        done_pos = response_text.find('data: [DONE]')
+        assert signature_pos < done_pos, "Signature event should appear before [DONE] message"
+
+        # Verify there's only one [DONE] message
+        done_count = response_text.count('data: [DONE]')
+        assert done_count == 1, f"Expected exactly 1 [DONE] message, found {done_count}"
 
     def test_completion_missing_env_vars(self, client, monkeypatch):
         """Test error when keys are not available and environment variables are missing."""
