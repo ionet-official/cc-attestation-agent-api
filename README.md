@@ -97,10 +97,14 @@ Response:
   - `signing_algo`: `ecdsa`
   - `image_digest`: Container image digest for integrity verification
 
-For streaming responses (`stream: true`), the signature is sent as a final SSE event:
+For streaming responses (`stream: true`), the signature is sent as an SSE event before the final `[DONE]` message:
 ```
+data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}
+
 event: signature
 data: {"text": "...", "signature": "...", "signing_address": "...", "signing_algo": "ecdsa", "image_digest": "..."}
+
+data: [DONE]
 ```
 
 For `/completion` responses, vLLM provenance is also included:
