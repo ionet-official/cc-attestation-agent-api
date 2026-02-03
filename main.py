@@ -129,8 +129,12 @@ def query_vllm_models() -> Optional[Dict[str, Any]]:
     import urllib.request
     import urllib.error
 
+    vllm_api_key = os.getenv("VLLM_API_KEY", "")
+
     try:
         req = urllib.request.Request(f"{VLLM_BASE_URL}/v1/models")
+        if vllm_api_key:
+            req.add_header("Authorization", f"Bearer {vllm_api_key}")
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
             return data
