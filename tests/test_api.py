@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -6,6 +7,9 @@ from main import app, prepare_nonce
 
 
 client = TestClient(app)
+
+# Auth header for protected endpoints
+AUTH_HEADERS = {"Authorization": "Bearer test-api-key"}
 
 
 class TestPingEndpoint:
@@ -62,6 +66,7 @@ class TestPrepareNonce:
 
 
 class TestAttestationEndpoint:
+    @patch.dict(os.environ, {"VLLM_API_KEY": "test-api-key"})
     @patch("main.get_cpu_quote")
     @patch("main.get_gpu_evidence")
     def test_attestation_with_provided_nonce(self, mock_gpu, mock_cpu):
@@ -70,7 +75,8 @@ class TestAttestationEndpoint:
 
         response = client.post(
             "/attestation",
-            json={"nonce": "deadbeef"}
+            json={"nonce": "deadbeef"},
+            headers=AUTH_HEADERS
         )
 
         assert response.status_code == 200
@@ -80,32 +86,37 @@ class TestAttestationEndpoint:
         assert "gpu" in data
         assert data["cpu"]["quote"] == "mock_cpu_quote"
 
+    @patch.dict(os.environ, {"VLLM_API_KEY": "test-api-key"})
     @patch("main.get_cpu_quote")
     @patch("main.get_gpu_evidence")
     def test_attestation_generates_nonce_when_none_provided(self, mock_gpu, mock_cpu):
         mock_cpu.return_value = "mock_cpu_quote"
         mock_gpu.return_value = {"status": "mocked"}
 
-        response = client.post("/attestation", json={})
+        response = client.post("/attestation", json={}, headers=AUTH_HEADERS)
 
         assert response.status_code == 200
         data = response.json()
         assert "nonce" in data
         assert len(data["nonce"]) == 64
 
+    @patch.dict(os.environ, {"VLLM_API_KEY": "test-api-key"})
     def test_attestation_rejects_invalid_nonce(self):
         response = client.post(
             "/attestation",
-            json={"nonce": "invalid-hex-string"}
+            json={"nonce": "invalid-hex-string"},
+            headers=AUTH_HEADERS
         )
 
         assert response.status_code == 500
         assert "Invalid hex string" in response.json()["detail"]
 
+    @patch.dict(os.environ, {"VLLM_API_KEY": "test-api-key"})
     def test_attestation_rejects_too_long_nonce(self):
         response = client.post(
             "/attestation",
-            json={"nonce": "a" * 66}
+            json={"nonce": "a" * 66},
+            headers=AUTH_HEADERS
         )
 
         assert response.status_code == 500
