@@ -199,7 +199,7 @@ except ImportError:
     collect_gpu_evidence = None
     print("WARNING: NVIDIA Attestation SDK not found. GPU attestation will fail.")
 
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 TSM_REPORT_PATH = "/sys/kernel/config/tsm/report"
 GPU_ARCH = "HOPPER"
