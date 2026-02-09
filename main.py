@@ -16,10 +16,13 @@ import hashlib
 import json
 from typing import Optional, Dict, Any
 
+import hmac
+
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 import httpx
 
@@ -200,6 +203,30 @@ except ImportError:
     print("WARNING: NVIDIA Attestation SDK not found. GPU attestation will fail.")
 
 app = FastAPI()
+
+# Security scheme for Bearer token authentication
+security = HTTPBearer()
+
+
+def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Verify the API key from Authorization header against VLLM_API_KEY."""
+    api_key = os.getenv("VLLM_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfigured: VLLM_API_KEY not set"
+        )
+
+    # Use constant-time comparison to prevent timing attacks
+    if not hmac.compare_digest(credentials.credentials, api_key):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    return credentials.credentials
+
 
 TSM_REPORT_PATH = "/sys/kernel/config/tsm/report"
 GPU_ARCH = "HOPPER"
@@ -426,7 +453,10 @@ def ping():
 
 
 @app.post("/attestation")
-def create_attestation_quote(payload: AttestationRequest):
+def create_attestation_quote(
+    payload: AttestationRequest,
+    _api_key: str = Depends(verify_api_key)
+):
     try:
         nonce_32_bytes, nonce_hex = prepare_nonce(payload.nonce)
         cpu_nonce_bytes = nonce_32_bytes.ljust(64, b'\x00')
@@ -451,12 +481,14 @@ def create_attestation_quote(payload: AttestationRequest):
 
 
 @app.post("/completion")
-async def create_completion(payload: CompletionRequest):
+async def create_completion(
+    payload: CompletionRequest,
+    api_key: str = Depends(verify_api_key)
+):
     """Proxy endpoint with ECDSA signing for vLLM chat completions."""
     try:
         private_key = GENERATED_PRIVATE_KEY
         public_key = GENERATED_PUBLIC_KEY
-        vllm_api_key = os.getenv("VLLM_API_KEY")
 
         if not private_key or not public_key:
             raise HTTPException(
@@ -464,18 +496,12 @@ async def create_completion(payload: CompletionRequest):
                 detail="Keys not available. Ensure keys are generated on startup or set via environment variables."
             )
 
-        if not vllm_api_key:
-            raise HTTPException(
-                status_code=500,
-                detail="Missing required environment variable: VLLM_API_KEY"
-            )
-
         request_body = payload.model_dump(exclude_none=True)
         request_hash = compute_hash(request_body)
 
         vllm_url = f"{VLLM_BASE_URL}/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {vllm_api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
 

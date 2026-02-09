@@ -38,6 +38,12 @@ def mock_env(test_keys, monkeypatch):
 
 
 @pytest.fixture
+def auth_headers():
+    """Auth headers for protected endpoints."""
+    return {"Authorization": "Bearer test-api-key"}
+
+
+@pytest.fixture
 def client():
     """Create test client."""
     return TestClient(app)
@@ -95,7 +101,7 @@ class TestCompletionEndpoint:
 
     @patch("httpx.AsyncClient")
     def test_completion_success(
-        self, mock_client_class, client, mock_env, sample_request, sample_vllm_response, test_keys
+        self, mock_client_class, client, mock_env, auth_headers, sample_request, sample_vllm_response, test_keys
     ):
         """Test successful completion with signature verification."""
         from httpx import Request
@@ -114,7 +120,7 @@ class TestCompletionEndpoint:
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client_class.return_value = mock_client
 
-        response = client.post("/completion", json=sample_request)
+        response = client.post("/completion", json=sample_request, headers=auth_headers)
 
         assert response.status_code == 200
         assert "text" in response.headers
@@ -163,7 +169,7 @@ class TestCompletionEndpoint:
 
     @patch("httpx.AsyncClient")
     def test_completion_streaming_success(
-        self, mock_client_class, client, mock_env, test_keys
+        self, mock_client_class, client, mock_env, auth_headers, test_keys
     ):
         """Test successful streaming completion with signature verification."""
         from unittest.mock import MagicMock
@@ -202,7 +208,7 @@ class TestCompletionEndpoint:
             "stream": True
         }
 
-        response = client.post("/completion", json=request_with_stream)
+        response = client.post("/completion", json=request_with_stream, headers=auth_headers)
         assert response.status_code == 200
         assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
 
@@ -269,7 +275,7 @@ class TestCompletionEndpoint:
 
     @patch("httpx.AsyncClient")
     def test_completion_streaming_basic(
-        self, mock_client_class, client, mock_env
+        self, mock_client_class, client, mock_env, auth_headers
     ):
         """Test basic streaming completion response structure."""
         from unittest.mock import MagicMock
@@ -302,7 +308,7 @@ class TestCompletionEndpoint:
         response = client.post("/completion", json={
             "messages": [{"role": "user", "content": "Hi"}],
             "stream": True
-        })
+        }, headers=auth_headers)
 
         assert response.status_code == 200
         assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
@@ -326,7 +332,7 @@ class TestCompletionEndpoint:
         done_count = response_text.count('data: [DONE]')
         assert done_count == 1, f"Expected exactly 1 [DONE] message, found {done_count}"
 
-    def test_completion_missing_env_vars(self, client, monkeypatch):
+    def test_completion_missing_env_vars(self, client, monkeypatch, auth_headers):
         """Test error when keys are not available and environment variables are missing."""
         import main
 
@@ -338,10 +344,11 @@ class TestCompletionEndpoint:
 
         monkeypatch.delenv("PRIVATE_KEY", raising=False)
         monkeypatch.delenv("PUBLIC_KEY", raising=False)
-        monkeypatch.delenv("VLLM_API_KEY", raising=False)
+        # Keep VLLM_API_KEY set for auth to pass
+        monkeypatch.setenv("VLLM_API_KEY", "test-api-key")
 
         try:
-            response = client.post("/completion", json={"messages": []})
+            response = client.post("/completion", json={"messages": []}, headers=auth_headers)
             assert response.status_code == 500
             # When keys are not generated and env vars are missing, should get this error
             assert "Keys not available" in response.json()["detail"]
@@ -351,7 +358,7 @@ class TestCompletionEndpoint:
             main.GENERATED_PUBLIC_KEY = original_public
 
     @patch("httpx.AsyncClient")
-    def test_completion_vllm_error(self, mock_client_class, client, mock_env):
+    def test_completion_vllm_error(self, mock_client_class, client, mock_env, auth_headers):
         """Test propagation of vLLM service errors."""
         from httpx import HTTPStatusError, Request
 
@@ -373,14 +380,15 @@ class TestCompletionEndpoint:
 
         response = client.post(
             "/completion",
-            json={"messages": [{"role": "user", "content": "Test"}]}
+            json={"messages": [{"role": "user", "content": "Test"}]},
+            headers=auth_headers
         )
 
         assert response.status_code == 500
         assert "vLLM service error" in response.json()["detail"]
 
     @patch("httpx.AsyncClient")
-    def test_completion_connection_error(self, mock_client_class, client, mock_env):
+    def test_completion_connection_error(self, mock_client_class, client, mock_env, auth_headers):
         """Test handling of connection errors to vLLM."""
         from httpx import RequestError, Request
 
@@ -395,7 +403,8 @@ class TestCompletionEndpoint:
 
         response = client.post(
             "/completion",
-            json={"messages": [{"role": "user", "content": "Test"}]}
+            json={"messages": [{"role": "user", "content": "Test"}]},
+            headers=auth_headers
         )
 
         assert response.status_code == 503
@@ -403,7 +412,7 @@ class TestCompletionEndpoint:
 
     @patch("httpx.AsyncClient")
     def test_completion_optional_fields(
-        self, mock_client_class, client, mock_env, sample_vllm_response
+        self, mock_client_class, client, mock_env, auth_headers, sample_vllm_response
     ):
         """Test that optional OpenAI fields are properly handled."""
         from httpx import Request
@@ -434,7 +443,7 @@ class TestCompletionEndpoint:
             "n": 1
         }
 
-        response = client.post("/completion", json=request_with_optional)
+        response = client.post("/completion", json=request_with_optional, headers=auth_headers)
         assert response.status_code == 200
 
         call_args = mock_client.post.call_args
