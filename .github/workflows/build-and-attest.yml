@@ -114,7 +114,7 @@ jobs:
           echo "${{ steps.push.outputs.digest }}" > image-digest.txt
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: image-digest
           path: image-digest.txt
@@ -180,7 +180,7 @@ jobs:
           echo "SBOM attestation attached to image"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: container-sbom
           path: sbom.cdx.json
